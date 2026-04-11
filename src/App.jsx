@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react"
+import Auth from "./Auth"
 import { supabase } from "./supabase"
 
 function App() {
@@ -12,11 +13,20 @@ function App() {
   const [activeCommit, setActiveCommit] = useState(null)
   const [plugins, setPlugins] = useState([])
   const [loading, setLoading] = useState(true)
+  const [session, setSession] = useState(null)
 
-  useEffect(() => {
-    fetchProjects()
-  }, [])
+useEffect(() => {
+  supabase.auth.getSession().then(({ data: { session } }) => {
+    setSession(session)
+    if (session) fetchProjects()
+    else setLoading(false)
+  })
 
+  supabase.auth.onAuthStateChange((_event, session) => {
+    setSession(session)
+    if (session) fetchProjects()
+  })
+}, [])
   useEffect(() => {
     if (selected) fetchCommits(selected.id)
   }, [selected])
@@ -90,14 +100,23 @@ function App() {
     color: "#e8e4dc", padding: "10px 14px", fontSize: 12,
     fontFamily: "monospace", outline: "none", marginBottom: 10,
   }
-
+if (!session) return <Auth />
   return (
+    
     <div style={{ display: "flex", height: "100vh", fontFamily: "monospace", background: "#0a0a0b", color: "#e8e4dc" }}>
 
       {/* Sidebar */}
       <div style={{ width: 220, borderRight: "1px solid #1e1e1e", display: "flex", flexDirection: "column" }}>
         <div style={{ padding: 16, borderBottom: "1px solid #1e1e1e" }}>
-          <h2 style={{ color: "#e8c97e", fontSize: 18 }}>FIRETRACKS</h2>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+  <h2 style={{ color: "#e8c97e", fontSize: 18 }}>FIRETRACKS</h2>
+  <span
+    onClick={() => supabase.auth.signOut()}
+    style={{ fontSize: 10, color: "#333", cursor: "pointer", letterSpacing: "0.08em" }}
+  >
+    SIGN OUT
+  </span>
+</div>
         </div>
         <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
           {loading ? (
