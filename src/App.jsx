@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react"
-import Auth from "./Auth"
 import { supabase } from "./supabase"
+import Auth from "./Auth"
 
 function App() {
   const [projects, setProjects] = useState([])
@@ -15,18 +15,19 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [session, setSession] = useState(null)
 
-useEffect(() => {
-  supabase.auth.getSession().then(({ data: { session } }) => {
-    setSession(session)
-    if (session) fetchProjects()
-    else setLoading(false)
-  })
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session)
+      if (session) fetchProjects()
+      else setLoading(false)
+    })
 
-  supabase.auth.onAuthStateChange((_event, session) => {
-    setSession(session)
-    if (session) fetchProjects()
-  })
-}, [])
+    supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session)
+      if (session) fetchProjects()
+    })
+  }, [])
+
   useEffect(() => {
     if (selected) fetchCommits(selected.id)
   }, [selected])
@@ -56,7 +57,11 @@ useEffect(() => {
 
   async function handleSave() {
     if (!message.trim()) return
-    const { data, error } = await supabase.from("commits").insert({ project_id: selected.id, message: message }).select()
+    const { data, error } = await supabase.from("commits").insert({
+      project_id: selected.id,
+      message: message,
+      user_id: session.user.id,
+    }).select()
     if (error) console.error(error)
     else {
       setCommits([data[0], ...commits])
@@ -74,6 +79,7 @@ useEffect(() => {
       daw: newProject.daw || "Unknown",
       daw_version: newProject.version || "",
       tracks: 0,
+      user_id: session.user.id,
     }).select()
     if (error) console.error(error)
     else {
@@ -100,23 +106,19 @@ useEffect(() => {
     color: "#e8e4dc", padding: "10px 14px", fontSize: 12,
     fontFamily: "monospace", outline: "none", marginBottom: 10,
   }
-if (!session) return <Auth />
+
+  if (!session) return <Auth />
+
   return (
-    
     <div style={{ display: "flex", height: "100vh", fontFamily: "monospace", background: "#0a0a0b", color: "#e8e4dc" }}>
 
       {/* Sidebar */}
       <div style={{ width: 220, borderRight: "1px solid #1e1e1e", display: "flex", flexDirection: "column" }}>
         <div style={{ padding: 16, borderBottom: "1px solid #1e1e1e" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-  <h2 style={{ color: "#e8c97e", fontSize: 18 }}>FIRETRACKS</h2>
-  <span
-    onClick={() => supabase.auth.signOut()}
-    style={{ fontSize: 10, color: "#333", cursor: "pointer", letterSpacing: "0.08em" }}
-  >
-    SIGN OUT
-  </span>
-</div>
+            <h2 style={{ color: "#e8c97e", fontSize: 18 }}>FIRETRACKS</h2>
+            <span onClick={() => supabase.auth.signOut()} style={{ fontSize: 10, color: "#333", cursor: "pointer", letterSpacing: "0.08em" }}>SIGN OUT</span>
+          </div>
         </div>
         <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
           {loading ? (
@@ -141,10 +143,7 @@ if (!session) return <Auth />
           )}
         </div>
         <div style={{ padding: 16, borderTop: "1px solid #1e1e1e" }}>
-          <button
-            onClick={() => setAddingProject(true)}
-            style={{ width: "100%", background: "transparent", border: "1px solid #222", color: "#555", padding: "8px", fontSize: 11, fontFamily: "monospace", cursor: "pointer", letterSpacing: "0.1em" }}
-          >
+          <button onClick={() => setAddingProject(true)} style={{ width: "100%", background: "transparent", border: "1px solid #222", color: "#555", padding: "8px", fontSize: 11, fontFamily: "monospace", cursor: "pointer", letterSpacing: "0.1em" }}>
             + NEW PROJECT
           </button>
         </div>
@@ -175,7 +174,6 @@ if (!session) return <Auth />
             </div>
             <p style={{ fontSize: 11, color: "#333", marginBottom: 32 }}>{commits.length} commit{commits.length !== 1 ? "s" : ""}</p>
 
-            {/* Commit Button */}
             <div style={{ marginBottom: 24 }}>
               {!committing ? (
                 <button onClick={() => setCommitting(true)} style={{ background: "#e8c97e", color: "#0a0a0b", border: "none", padding: "10px 20px", fontSize: 12, fontFamily: "monospace", cursor: "pointer", letterSpacing: "0.1em" }}>
@@ -190,7 +188,6 @@ if (!session) return <Auth />
               )}
             </div>
 
-            {/* Commit History */}
             {commits.length === 0 ? (
               <p style={{ color: "#333", fontSize: 12 }}>No commits yet. Hit + COMMIT to save your first version.</p>
             ) : (
@@ -211,7 +208,6 @@ if (!session) return <Auth />
                       </div>
                     </div>
 
-                    {/* Plugin Intelligence Panel */}
                     {activeCommit?.id === commit.id && (
                       <div style={{ background: "#0d0d0d", border: "1px solid #1a1a1a", borderTop: "none", padding: 16, marginBottom: 8 }}>
                         <p style={{ fontSize: 10, color: "#e8c97e", letterSpacing: "0.1em", marginBottom: 12 }}>PLUGIN INTELLIGENCE</p>
