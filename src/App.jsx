@@ -3,14 +3,50 @@ import { supabase } from "./supabase"
 import Auth from "./Auth"
 import Landing from "./Landing"
 
+// ── Design tokens ───────────────────────────────────
+const c = {
+  bg: "#F7FAF9",
+  surface: "#FFFFFF",
+  border: "#E4E9E8",
+  teal: "#0E8074",
+  tealDark: "#0B685F",
+  tealSoft: "#E6F3F1",
+  text: "#111827",
+  textSoft: "#6B7280",
+  textFaint: "#9CA3AF",
+  danger: "#DC2626",
+}
+
+// Turns a timestamp into "2h ago", "Yesterday", "3d ago" etc.
+function timeAgo(dateString) {
+  const diff = (Date.now() - new Date(dateString).getTime()) / 1000
+  if (diff < 60) return "Just now"
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  if (diff < 172800) return "Yesterday"
+  return `${Math.floor(diff / 86400)}d ago`
+}
+
+// Deterministic color tile per DAW name, so the same DAW always
+// gets the same tile color — real, derived data, not a random placeholder.
+const dawColors = {
+  "FL Studio": "#F97316",
+  "Ableton Live": "#22C55E",
+  "Logic Pro": "#38BDF8",
+  "Pro Tools": "#A78BFA",
+}
+function dawColor(daw) {
+  return dawColors[daw] || "#94A3B8"
+}
+
 function App() {
   const [session, setSession] = useState(null)
   const [showAuth, setShowAuth] = useState(false)
   const [loading, setLoading] = useState(true)
 
   const [projects, setProjects] = useState([])
+  const [allCommits, setAllCommits] = useState([]) // every commit, across every project
   const [selected, setSelected] = useState(null)
-  const [commits, setCommits] = useState([])
   const [plugins, setPlugins] = useState([])
   const [activeCommit, setActiveCommit] = useState(null)
 
@@ -21,53 +57,55 @@ function App() {
   const [editingProject, setEditingProject] = useState(false)
   const [projectForm, setProjectForm] = useState({ name: "", bpm: "", key: "", daw: "", version: "" })
 
+  const [search, setSearch] = useState("")
+  const [view, setView] = useState("overview") // overview | project
+
   // ── AUTH ──────────────────────────────────────────
-  // On first load, ask Supabase if there's already a logged-in session
-  // (e.g. the user was logged in yesterday and closed the tab).
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session)
-      if (session) fetchProjects()
+      if (session) fetchAll()
       else setLoading(false)
     })
-
-    // This listener fires automatically whenever login/logout happens
-    // anywhere in the app — so the UI always reflects the real auth state.
     supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session)
-      if (session) fetchProjects()
+      if (session) fetchAll()
     })
   }, [])
 
-  // Whenever the selected project changes, load that project's commits.
-  useEffect(() => {
-    if (selected) fetchCommits(selected.id)
-  }, [selected])
-
   // ── FETCHING ──────────────────────────────────────
-  async function fetchProjects() {
+  // One pass: get every project, then every commit for those projects.
+  // This lets us compute real stats (counts, last activity) without
+  // guessing or inventing numbers.
+  async function fetchAll() {
     setLoading(true)
-    const { data, error } = await supabase
+    const { data: projectData, error: projectError } = await supabase
       .from("projects")
       .select("*")
       .order("created_at", { ascending: false })
-    if (error) console.error(error)
-    else {
-      setProjects(data)
-      // Auto-select the first project so the screen isn't empty on load
-      if (data.length > 0) setSelected(data[0])
+
+    if (projectError) {
+      console.error(projectError)
+      setLoading(false)
+      return
+    }
+
+    setProjects(projectData)
+
+    if (projectData.length > 0) {
+      const ids = projectData.map(p => p.id)
+      const { data: commitData, error: commitError } = await supabase
+        .from("commits")
+        .select("*")
+        .in("project_id", ids)
+        .order("created_at", { ascending: false })
+
+      if (commitError) console.error(commitError)
+      else setAllCommits(commitData)
+
+      setSelected(projectData[0])
     }
     setLoading(false)
-  }
-
-  async function fetchCommits(projectId) {
-    const { data, error } = await supabase
-      .from("commits")
-      .select("*")
-      .eq("project_id", projectId)
-      .order("created_at", { ascending: false })
-    if (error) console.error(error)
-    else setCommits(data)
   }
 
   async function fetchPlugins(commitId) {
@@ -80,6 +118,34 @@ function App() {
     else setPlugins(data)
   }
 
+  // ── DERIVED, REAL DATA ────────────────────────────
+  // Commits belonging to the currently open project
+  const projectCommits = selected ? allCommits.filter(c2 => c2.project_id === selected.id) : []
+
+  // The single most recent commit across everything the user owns
+  const latestCommit = allCommits[0] || null
+  const latestCommitProject = latestCommit ? projects.find(p => p.id === latestCommit.project_id) : null
+
+  // A real activity feed — just the last 5 commits, newest first,
+  // each one labelled with which project it belongs to.
+  const recentActivity = allCommits.slice(0, 5).map(commit => ({
+    ...commit,
+    projectName: projects.find(p => p.id === commit.project_id)?.name || "Unknown project",
+  }))
+
+  const filteredProjects = projects.filter(p =>
+    p.name.toLowerCase().includes(search.toLowerCase())
+  )
+
+  function commitCountFor(projectId) {
+    return allCommits.filter(c2 => c2.project_id === projectId).length
+  }
+
+  function lastActivityFor(projectId) {
+    const found = allCommits.find(c2 => c2.project_id === projectId)
+    return found ? timeAgo(found.created_at) : "No commits yet"
+  }
+
   // ── COMMITS: create + delete ─────────────────────
   async function handleSaveCommit() {
     if (!message.trim()) return
@@ -87,25 +153,17 @@ function App() {
       .from("commits")
       .insert({ project_id: selected.id, message, user_id: session.user.id })
       .select()
-    if (error) console.error(error)
-    else {
-      setCommits([data[0], ...commits])
-      setCommitting(false)
-      setMessage("")
-    }
+    if (error) { console.error(error); return }
+    setAllCommits([data[0], ...allCommits])
+    setCommitting(false)
+    setMessage("")
   }
 
   async function handleDeleteCommit(commitId) {
-    // Native browser confirm — simple and effective for a destructive action
     if (!confirm("Delete this commit? This can't be undone.")) return
     const { error } = await supabase.from("commits").delete().eq("id", commitId)
-    if (error) {
-      console.error(error)
-      return
-    }
-    // Remove it from local state so the UI updates instantly,
-    // without needing to re-fetch everything from the database.
-    setCommits(commits.filter(c => c.id !== commitId))
+    if (error) { console.error(error); return }
+    setAllCommits(allCommits.filter(c2 => c2.id !== commitId))
     if (activeCommit?.id === commitId) {
       setActiveCommit(null)
       setPlugins([])
@@ -113,7 +171,6 @@ function App() {
   }
 
   function handleCommitClick(commit) {
-    // Clicking an already-open commit closes it (toggle behaviour)
     if (activeCommit?.id === commit.id) {
       setActiveCommit(null)
       setPlugins([])
@@ -131,7 +188,6 @@ function App() {
   }
 
   function openEditProjectForm() {
-    // Pre-fill the form with the currently selected project's data
     setProjectForm({
       name: selected.name,
       bpm: selected.bpm || "",
@@ -157,14 +213,11 @@ function App() {
         user_id: session.user.id,
       })
       .select()
-    if (error) {
-      console.error(error)
-      return
-    }
+    if (error) { console.error(error); return }
     setProjects([data[0], ...projects])
     setSelected(data[0])
-    setCommits([])
     setAddingProject(false)
+    setView("project")
   }
 
   async function handleUpdateProject() {
@@ -180,15 +233,10 @@ function App() {
       })
       .eq("id", selected.id)
       .select()
-    if (error) {
-      console.error(error)
-      return
-    }
-    // Update this one project in the local list, and keep it selected
-    // with its fresh data, without touching anything else.
-    const updatedProject = data[0]
-    setProjects(projects.map(p => (p.id === updatedProject.id ? updatedProject : p)))
-    setSelected(updatedProject)
+    if (error) { console.error(error); return }
+    const updated = data[0]
+    setProjects(projects.map(p => (p.id === updated.id ? updated : p)))
+    setSelected(updated)
     setAddingProject(false)
     setEditingProject(false)
   }
@@ -196,145 +244,213 @@ function App() {
   async function handleDeleteProject(id) {
     if (!confirm("Delete this project and all its commits? This can't be undone.")) return
     const { error } = await supabase.from("projects").delete().eq("id", id)
-    if (error) {
-      console.error(error)
-      return
-    }
+    if (error) { console.error(error); return }
     const remaining = projects.filter(p => p.id !== id)
     setProjects(remaining)
+    setAllCommits(allCommits.filter(c2 => c2.project_id !== id))
     if (selected?.id === id) {
-      // If we just deleted the project we were viewing, fall back to
-      // the next available project (or an empty state if none are left).
       setSelected(remaining[0] || null)
-      setCommits([])
+      setView("overview")
     }
   }
 
-  const inputStyle = {
-    width: "100%", background: "#111", border: "1px solid #2a2a2a",
-    color: "#e8e4dc", padding: "10px 14px", fontSize: 12,
-    fontFamily: "monospace", outline: "none", marginBottom: 10,
+  // ── SHARED STYLES ─────────────────────────────────
+  const input = {
+    width: "100%", background: c.surface, border: `1px solid ${c.border}`,
+    color: c.text, padding: "10px 14px", fontSize: 14,
+    borderRadius: 8, outline: "none", marginBottom: 10, fontFamily: "inherit",
+  }
+  const card = {
+    background: c.surface, border: `1px solid ${c.border}`, borderRadius: 12,
+  }
+  const btnPrimary = {
+    background: c.teal, color: "#fff", border: "none", borderRadius: 8,
+    padding: "10px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer",
+  }
+  const btnGhost = {
+    background: "transparent", color: c.textSoft, border: `1px solid ${c.border}`,
+    borderRadius: 8, padding: "10px 18px", fontSize: 13, fontWeight: 500, cursor: "pointer",
   }
 
   // ── SCREEN ROUTING ────────────────────────────────
-  // Not logged in + hasn't clicked "get started" yet → show the landing page
   if (!session && !showAuth) return <Landing onGetStarted={() => setShowAuth(true)} />
-  // Not logged in + clicked "get started" → show login/signup
   if (!session && showAuth) return <Auth />
 
+  const firstName = session?.user?.user_metadata?.full_name?.split(" ")[0]
+    || session?.user?.email?.split("@")[0]
+    || "there"
+
+  const hour = new Date().getHours()
+  const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"
+
   return (
-    <div style={{ display: "flex", height: "100vh", fontFamily: "monospace", background: "#0a0a0b", color: "#e8e4dc" }}>
+    <div style={{ display: "flex", minHeight: "100vh", background: c.bg, color: c.text, fontFamily: "'Inter', system-ui, sans-serif" }}>
 
       {/* Sidebar */}
-      <div style={{ width: 220, borderRight: "1px solid #1e1e1e", display: "flex", flexDirection: "column" }}>
-        <div style={{ padding: 16, borderBottom: "1px solid #1e1e1e" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <h2 style={{ color: "#e8c97e", fontSize: 18 }}>SYNCTRACKR</h2>
-            <span onClick={() => supabase.auth.signOut()} style={{ fontSize: 10, color: "#333", cursor: "pointer", letterSpacing: "0.08em" }}>
-              SIGN OUT
-            </span>
-          </div>
+      <div style={{ width: 240, borderRight: `1px solid ${c.border}`, background: c.surface, display: "flex", flexDirection: "column", padding: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 24 }}>
+          <span style={{ fontSize: 18, fontWeight: 700, color: c.teal }}>SyncTrackr</span>
         </div>
 
-        <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
-          {loading ? (
-            <p style={{ padding: 16, fontSize: 11, color: "#333" }}>Loading...</p>
-          ) : projects.length === 0 ? (
-            <p style={{ padding: 16, fontSize: 11, color: "#333" }}>No projects yet.</p>
-          ) : (
-            projects.map(p => (
-              <div
-                key={p.id}
-                onClick={() => { setSelected(p); setAddingProject(false); setActiveCommit(null) }}
-                style={{
-                  display: "flex", justifyContent: "space-between", alignItems: "center",
-                  padding: "10px 16px", marginBottom: 2, cursor: "pointer",
-                  borderLeft: selected?.id === p.id ? "2px solid #e8c97e" : "2px solid transparent",
-                  background: selected?.id === p.id ? "#111" : "transparent",
-                  color: selected?.id === p.id ? "#e8e4dc" : "#555",
-                }}
-              >
-                <div style={{ fontSize: 13 }}>{p.name}</div>
-                {/* stopPropagation stops this click from also triggering the
-                    parent div's onClick (which would re-select the project) */}
-                <span
-                  onClick={(e) => { e.stopPropagation(); handleDeleteProject(p.id) }}
-                  style={{ fontSize: 11, color: "#333", padding: "0 4px" }}
-                  title="Delete project"
-                >
-                  ✕
-                </span>
-              </div>
-            ))
-          )}
+        <button onClick={openNewProjectForm} style={{ ...btnPrimary, width: "100%", marginBottom: 20 }}>
+          + New Project
+        </button>
+
+        <div
+          onClick={() => setView("overview")}
+          style={{
+            padding: "9px 12px", borderRadius: 8, fontSize: 14, fontWeight: 500, cursor: "pointer", marginBottom: 4,
+            background: view === "overview" ? c.tealSoft : "transparent",
+            color: view === "overview" ? c.teal : c.textSoft,
+          }}
+        >
+          Overview
         </div>
 
-        <div style={{ padding: 16, borderTop: "1px solid #1e1e1e" }}>
-          <button
-            onClick={openNewProjectForm}
-            style={{ width: "100%", background: "transparent", border: "1px solid #222", color: "#555", padding: "8px", fontSize: 11, fontFamily: "monospace", cursor: "pointer", letterSpacing: "0.1em" }}
-          >
-            + NEW PROJECT
-          </button>
+        <div style={{ flex: 1, overflowY: "auto", marginTop: 8 }}>
+          <p style={{ fontSize: 11, color: c.textFaint, fontWeight: 600, letterSpacing: "0.04em", margin: "12px 4px 6px" }}>PROJECTS</p>
+          {projects.map(p => (
+            <div
+              key={p.id}
+              onClick={() => { setSelected(p); setView("project"); setActiveCommit(null) }}
+              style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                padding: "8px 12px", borderRadius: 8, cursor: "pointer", marginBottom: 2,
+                background: view === "project" && selected?.id === p.id ? c.tealSoft : "transparent",
+                color: view === "project" && selected?.id === p.id ? c.teal : c.textSoft,
+              }}
+            >
+              <span style={{ fontSize: 13.5, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+              <span onClick={(e) => { e.stopPropagation(); handleDeleteProject(p.id) }} style={{ fontSize: 12, color: c.textFaint }}>✕</span>
+            </div>
+          ))}
+        </div>
+
+        <div onClick={() => supabase.auth.signOut()} style={{ fontSize: 13, color: c.textFaint, cursor: "pointer", paddingTop: 12, borderTop: `1px solid ${c.border}` }}>
+          Sign out
         </div>
       </div>
 
-      {/* Main Panel */}
-      <div style={{ flex: 1, padding: 32, overflowY: "auto" }}>
+      {/* Main */}
+      <div style={{ flex: 1, padding: "32px 40px", overflowY: "auto" }}>
+
         {addingProject ? (
-          <>
-            <h1 style={{ fontSize: 24, marginBottom: 24, color: "#e8c97e" }}>
-              {editingProject ? "Edit Project" : "New Project"}
-            </h1>
-            <input style={inputStyle} placeholder="Project name *" value={projectForm.name} onChange={e => setProjectForm({ ...projectForm, name: e.target.value })} />
-            <input style={inputStyle} placeholder="BPM (e.g. 140)" value={projectForm.bpm} onChange={e => setProjectForm({ ...projectForm, bpm: e.target.value })} />
-            <input style={inputStyle} placeholder="Key (e.g. F minor)" value={projectForm.key} onChange={e => setProjectForm({ ...projectForm, key: e.target.value })} />
-            <input style={inputStyle} placeholder="DAW (e.g. FL Studio)" value={projectForm.daw} onChange={e => setProjectForm({ ...projectForm, daw: e.target.value })} />
-            <input style={inputStyle} placeholder="DAW version (e.g. 21.2)" value={projectForm.version} onChange={e => setProjectForm({ ...projectForm, version: e.target.value })} />
+          <div style={{ maxWidth: 420 }}>
+            <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20 }}>{editingProject ? "Edit project" : "New project"}</h1>
+            <input style={input} placeholder="Project name" value={projectForm.name} onChange={e => setProjectForm({ ...projectForm, name: e.target.value })} />
+            <input style={input} placeholder="BPM" value={projectForm.bpm} onChange={e => setProjectForm({ ...projectForm, bpm: e.target.value })} />
+            <input style={input} placeholder="Key (e.g. F minor)" value={projectForm.key} onChange={e => setProjectForm({ ...projectForm, key: e.target.value })} />
+            <input style={input} placeholder="DAW (e.g. FL Studio)" value={projectForm.daw} onChange={e => setProjectForm({ ...projectForm, daw: e.target.value })} />
+            <input style={input} placeholder="DAW version" value={projectForm.version} onChange={e => setProjectForm({ ...projectForm, version: e.target.value })} />
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <button
-                onClick={editingProject ? handleUpdateProject : handleCreateProject}
-                style={{ background: "#e8c97e", color: "#0a0a0b", border: "none", padding: "10px 24px", fontSize: 12, fontFamily: "monospace", cursor: "pointer" }}
-              >
-                {editingProject ? "SAVE CHANGES" : "CREATE"}
+              <button onClick={editingProject ? handleUpdateProject : handleCreateProject} style={btnPrimary}>
+                {editingProject ? "Save changes" : "Create project"}
               </button>
-              <button
-                onClick={() => { setAddingProject(false); setEditingProject(false) }}
-                style={{ background: "transparent", color: "#555", border: "1px solid #222", padding: "10px 24px", fontSize: 12, fontFamily: "monospace", cursor: "pointer" }}
-              >
-                CANCEL
-              </button>
+              <button onClick={() => { setAddingProject(false); setEditingProject(false) }} style={btnGhost}>Cancel</button>
             </div>
+          </div>
+
+        ) : view === "overview" ? (
+          <>
+            <h1 style={{ fontSize: 26, fontWeight: 700, marginBottom: 4 }}>{greeting}, {firstName} 👋</h1>
+            <p style={{ color: c.textSoft, fontSize: 14, marginBottom: 24 }}>Every commit tells a story. Yours is safe with us.</p>
+
+            <input
+              placeholder="Search projects..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              style={{ ...input, maxWidth: 360, marginBottom: 28 }}
+            />
+
+            {/* Real stats row — no invented numbers */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 32 }}>
+              <div style={{ ...card, padding: 20 }}>
+                <p style={{ fontSize: 13, color: c.textSoft, marginBottom: 6 }}>Projects</p>
+                <p style={{ fontSize: 26, fontWeight: 700 }}>{projects.length}</p>
+              </div>
+              <div style={{ ...card, padding: 20 }}>
+                <p style={{ fontSize: 13, color: c.textSoft, marginBottom: 6 }}>Versions saved</p>
+                <p style={{ fontSize: 26, fontWeight: 700 }}>{allCommits.length}</p>
+              </div>
+              <div style={{ ...card, padding: 20 }}>
+                <p style={{ fontSize: 13, color: c.textSoft, marginBottom: 6 }}>Last activity</p>
+                <p style={{ fontSize: 26, fontWeight: 700 }}>{latestCommit ? timeAgo(latestCommit.created_at) : "—"}</p>
+              </div>
+            </div>
+
+            {loading ? (
+              <p style={{ color: c.textFaint, fontSize: 13 }}>Loading...</p>
+            ) : projects.length === 0 ? (
+              <div style={{ ...card, padding: 32, textAlign: "center" }}>
+                <p style={{ color: c.textSoft, fontSize: 14, marginBottom: 12 }}>No projects yet.</p>
+                <button onClick={openNewProjectForm} style={btnPrimary}>Create your first project</button>
+              </div>
+            ) : (
+              <>
+                <p style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Recent projects</p>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 16, marginBottom: 32 }}>
+                  {filteredProjects.slice(0, 6).map(p => (
+                    <div
+                      key={p.id}
+                      onClick={() => { setSelected(p); setView("project") }}
+                      style={{ ...card, cursor: "pointer", overflow: "hidden" }}
+                    >
+                      <div style={{ height: 64, background: dawColor(p.daw) }} />
+                      <div style={{ padding: 14 }}>
+                        <p style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>{p.name}</p>
+                        <p style={{ fontSize: 12, color: c.textSoft, marginBottom: 8 }}>{p.daw} {p.daw_version}</p>
+                        <p style={{ fontSize: 11.5, color: c.textFaint }}>
+                          {commitCountFor(p.id)} commit{commitCountFor(p.id) !== 1 ? "s" : ""} · {lastActivityFor(p.id)}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {latestCommit && (
+                  <div style={{ ...card, padding: 20, marginBottom: 32 }}>
+                    <p style={{ fontSize: 13, color: c.textSoft, marginBottom: 10, fontWeight: 600 }}>Latest version</p>
+                    <p style={{ fontSize: 15, fontWeight: 600 }}>{latestCommitProject?.name}</p>
+                    <p style={{ fontSize: 13, color: c.textSoft, marginBottom: 2 }}>{latestCommit.message}</p>
+                    <p style={{ fontSize: 12, color: c.textFaint }}>{timeAgo(latestCommit.created_at)}</p>
+                  </div>
+                )}
+
+                <p style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Recent activity</p>
+                {recentActivity.length === 0 ? (
+                  <p style={{ color: c.textFaint, fontSize: 13 }}>No commits yet — activity will show up here once you start saving versions.</p>
+                ) : (
+                  <div style={{ ...card, padding: 4 }}>
+                    {recentActivity.map(a => (
+                      <div key={a.id} style={{ display: "flex", justifyContent: "space-between", padding: "12px 16px", borderBottom: `1px solid ${c.border}` }}>
+                        <div>
+                          <p style={{ fontSize: 13.5, fontWeight: 500 }}>{a.message}</p>
+                          <p style={{ fontSize: 12, color: c.textSoft }}>{a.projectName}</p>
+                        </div>
+                        <span style={{ fontSize: 12, color: c.textFaint, whiteSpace: "nowrap" }}>{timeAgo(a.created_at)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
           </>
+
         ) : selected ? (
           <>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-              <h1 style={{ fontSize: 28, marginBottom: 8 }}>{selected.name}</h1>
-              <span
-                onClick={openEditProjectForm}
-                style={{ fontSize: 11, color: "#555", cursor: "pointer", letterSpacing: "0.08em", marginTop: 8 }}
-              >
-                EDIT
-              </span>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+              <h1 style={{ fontSize: 24, fontWeight: 700 }}>{selected.name}</h1>
+              <span onClick={openEditProjectForm} style={{ fontSize: 13, color: c.teal, cursor: "pointer", fontWeight: 500 }}>Edit</span>
             </div>
-            <div style={{ display: "flex", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
-              <span style={{ background: "#1a1a1a", padding: "4px 10px", fontSize: 11 }}>{selected.bpm} BPM</span>
-              <span style={{ background: "#1a1a1a", padding: "4px 10px", fontSize: 11 }}>{selected.key}</span>
-              <span style={{ background: "#1a1a1a", padding: "4px 10px", fontSize: 11 }}>{selected.daw} {selected.daw_version}</span>
+            <div style={{ display: "flex", gap: 8, marginBottom: 24, flexWrap: "wrap" }}>
+              <span style={{ background: c.tealSoft, color: c.teal, padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 500 }}>{selected.bpm} BPM</span>
+              <span style={{ background: c.tealSoft, color: c.teal, padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 500 }}>{selected.key}</span>
+              <span style={{ background: c.tealSoft, color: c.teal, padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 500 }}>{selected.daw} {selected.daw_version}</span>
             </div>
-            <p style={{ fontSize: 11, color: "#333", marginBottom: 32 }}>
-              {commits.length} commit{commits.length !== 1 ? "s" : ""}
-            </p>
 
-            {/* Commit button / form */}
             <div style={{ marginBottom: 24 }}>
               {!committing ? (
-                <button
-                  onClick={() => setCommitting(true)}
-                  style={{ background: "#e8c97e", color: "#0a0a0b", border: "none", padding: "10px 20px", fontSize: 12, fontFamily: "monospace", cursor: "pointer", letterSpacing: "0.1em" }}
-                >
-                  + COMMIT
-                </button>
+                <button onClick={() => setCommitting(true)} style={btnPrimary}>+ Commit</button>
               ) : (
                 <div style={{ display: "flex", gap: 8 }}>
                   <input
@@ -342,61 +458,53 @@ function App() {
                     onChange={e => setMessage(e.target.value)}
                     placeholder="Describe this version..."
                     onKeyDown={e => e.key === "Enter" && handleSaveCommit()}
-                    style={{ flex: 1, background: "#111", border: "1px solid #2a2a2a", color: "#e8e4dc", padding: "10px 14px", fontSize: 12, fontFamily: "monospace", outline: "none" }}
+                    style={{ ...input, marginBottom: 0, flex: 1 }}
                   />
-                  <button onClick={handleSaveCommit} style={{ background: "#e8c97e", color: "#0a0a0b", border: "none", padding: "10px 20px", fontSize: 12, fontFamily: "monospace", cursor: "pointer" }}>SAVE</button>
-                  <button onClick={() => { setCommitting(false); setMessage("") }} style={{ background: "transparent", color: "#555", border: "1px solid #222", padding: "10px 20px", fontSize: 12, fontFamily: "monospace", cursor: "pointer" }}>CANCEL</button>
+                  <button onClick={handleSaveCommit} style={btnPrimary}>Save</button>
+                  <button onClick={() => { setCommitting(false); setMessage("") }} style={btnGhost}>Cancel</button>
                 </div>
               )}
             </div>
 
-            {/* Commit history */}
-            {commits.length === 0 ? (
-              <p style={{ color: "#333", fontSize: 12 }}>No commits yet. Hit + COMMIT to save your first version.</p>
+            <p style={{ fontSize: 13, color: c.textSoft, marginBottom: 12 }}>
+              {projectCommits.length} commit{projectCommits.length !== 1 ? "s" : ""}
+            </p>
+
+            {projectCommits.length === 0 ? (
+              <p style={{ color: c.textFaint, fontSize: 13 }}>No commits yet. Hit + Commit to save your first version.</p>
             ) : (
               <div>
-                {commits.map((commit, index) => (
-                  <div key={commit.id}>
+                {projectCommits.map((commit, index) => (
+                  <div key={commit.id} style={{ ...card, marginBottom: 8, overflow: "hidden" }}>
                     <div
                       onClick={() => handleCommitClick(commit)}
-                      style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", marginBottom: 4, background: "#111", borderLeft: activeCommit?.id === commit.id ? "2px solid #e8c97e" : "2px solid #1e1e1e", cursor: "pointer" }}
+                      style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", cursor: "pointer" }}
                     >
                       <div>
-                        <div style={{ fontSize: 13, marginBottom: 4 }}>{commit.message}</div>
-                        <div style={{ fontSize: 10, color: "#444" }}>
-                          v1.0.{commits.length - 1 - index} · {new Date(commit.created_at).toLocaleDateString()}
-                        </div>
+                        <p style={{ fontSize: 13.5, fontWeight: 500 }}>{commit.message}</p>
+                        <p style={{ fontSize: 12, color: c.textFaint }}>
+                          v1.0.{projectCommits.length - 1 - index} · {timeAgo(commit.created_at)}
+                        </p>
                       </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-                        <span style={{ fontSize: 11, color: "#555" }}>{commit.size}</span>
-                        <span style={{ fontSize: 10, color: "#333" }}>
-                          {activeCommit?.id === commit.id ? "▲ hide" : "▼ plugins"}
-                        </span>
-                        <span
-                          onClick={(e) => { e.stopPropagation(); handleDeleteCommit(commit.id) }}
-                          style={{ fontSize: 11, color: "#333" }}
-                          title="Delete commit"
-                        >
-                          ✕
-                        </span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                        <span style={{ fontSize: 12, color: c.teal }}>{activeCommit?.id === commit.id ? "Hide" : "Plugins"}</span>
+                        <span onClick={(e) => { e.stopPropagation(); handleDeleteCommit(commit.id) }} style={{ fontSize: 12, color: c.textFaint }}>✕</span>
                       </div>
                     </div>
 
                     {activeCommit?.id === commit.id && (
-                      <div style={{ background: "#0d0d0d", border: "1px solid #1a1a1a", borderTop: "none", padding: 16, marginBottom: 8 }}>
-                        <p style={{ fontSize: 10, color: "#e8c97e", letterSpacing: "0.1em", marginBottom: 12 }}>PLUGIN INTELLIGENCE</p>
+                      <div style={{ borderTop: `1px solid ${c.border}`, padding: 16, background: c.bg }}>
+                        <p style={{ fontSize: 11, color: c.teal, fontWeight: 600, letterSpacing: "0.04em", marginBottom: 10 }}>PLUGIN INTELLIGENCE</p>
                         {plugins.length === 0 ? (
-                          <p style={{ fontSize: 11, color: "#333" }}>No plugin data stored for this commit.</p>
+                          <p style={{ fontSize: 12, color: c.textFaint }}>No plugin data stored for this commit.</p>
                         ) : (
                           plugins.map((plugin, i) => (
-                            <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", marginBottom: 6, background: "#111", borderLeft: "2px solid #222" }}>
+                            <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", marginBottom: 6, background: c.surface, borderRadius: 8, border: `1px solid ${c.border}` }}>
                               <div>
-                                <div style={{ fontSize: 12, marginBottom: 2 }}>{plugin.name}</div>
-                                <div style={{ fontSize: 10, color: "#444" }}>
-                                  Track: {plugin.track} · Chain #{plugin.chain_order} · Preset: {plugin.preset}
-                                </div>
+                                <p style={{ fontSize: 12.5, fontWeight: 500 }}>{plugin.name}</p>
+                                <p style={{ fontSize: 11, color: c.textFaint }}>Track: {plugin.track} · Chain #{plugin.chain_order} · Preset: {plugin.preset}</p>
                               </div>
-                              <div style={{ fontSize: 10, color: "#333" }}>v{plugin.version}</div>
+                              <span style={{ fontSize: 11, color: c.textFaint }}>v{plugin.version}</span>
                             </div>
                           ))
                         )}
@@ -407,9 +515,7 @@ function App() {
               </div>
             )}
           </>
-        ) : (
-          <p style={{ color: "#333" }}>Select a project or create a new one.</p>
-        )}
+        ) : null}
       </div>
     </div>
   )
