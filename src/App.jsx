@@ -19,7 +19,12 @@ const c = {
 
 // Turns a timestamp into "2h ago", "Yesterday", "3d ago" etc.
 function timeAgo(dateString) {
-  const diff = (Date.now() - new Date(dateString).getTime()) / 1000
+  // Supabase stores timestamps without a timezone suffix, so we force
+  // JS to read it as UTC — otherwise the browser assumes local time
+  // and the math comes out wrong (e.g. "1h ago" for something just saved).
+  const utcString = dateString.endsWith("Z") ? dateString : dateString + "Z"
+  const diff = Math.max(0, (Date.now() - new Date(utcString).getTime()) / 1000)
+
   if (diff < 60) return "Just now"
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
