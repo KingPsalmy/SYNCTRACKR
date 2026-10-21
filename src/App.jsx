@@ -2,6 +2,7 @@ import { useState, useEffect } from "react"
 import { supabase } from "./supabase"
 import Auth from "./Auth"
 import Landing from "./Landing"
+import { uploadFile, formatBytes } from "./upload"
 
 // ── Design tokens ───────────────────────────────────
 const c = {
@@ -57,6 +58,9 @@ function App() {
 
   const [committing, setCommitting] = useState(false)
   const [message, setMessage] = useState("")
+  const [file, setFile] = useState(null)
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState("")
 
   const [addingProject, setAddingProject] = useState(false)
   const [editingProject, setEditingProject] = useState(false)
@@ -153,15 +157,41 @@ function App() {
 
   // ── COMMITS: create + delete ─────────────────────
   async function handleSaveCommit() {
-    if (!message.trim()) return
+    if (!message.trim() || uploading) return
+    setUploadError("")
+
+    // Step 1: if a file was chosen, upload it first.
+    let uploaded = null
+    if (file) {
+      setUploading(true)
+      try {
+        uploaded = await uploadFile(file, selected.id)
+      } catch (err) {
+        console.error(err)
+        setUploadError(err.message)
+        return
+      } finally {
+        setUploading(false)
+      }
+    }
+
+    // Step 2: only after the upload succeeds, save the commit row.
     const { data, error } = await supabase
       .from("commits")
-      .insert({ project_id: selected.id, message, user_id: session.user.id })
+      .insert({
+        project_id: selected.id,
+        message,
+        user_id: session.user.id,
+        file_url: uploaded ? uploaded.key : null,
+        file_name: uploaded ? uploaded.name : null,
+        file_size: uploaded ? uploaded.size : null,
+      })
       .select()
     if (error) { console.error(error); return }
     setAllCommits([data[0], ...allCommits])
     setCommitting(false)
     setMessage("")
+    setFile(null)
   }
 
   async function handleDeleteCommit(commitId) {
@@ -453,20 +483,44 @@ function App() {
               <span style={{ background: c.tealSoft, color: c.teal, padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 500 }}>{selected.daw} {selected.daw_version}</span>
             </div>
 
+            {/* Commit button / form (now with file picker) */}
             <div style={{ marginBottom: 24 }}>
               {!committing ? (
                 <button onClick={() => setCommitting(true)} style={btnPrimary}>+ Commit</button>
               ) : (
-                <div style={{ display: "flex", gap: 8 }}>
-                  <input
-                    value={message}
-                    onChange={e => setMessage(e.target.value)}
-                    placeholder="Describe this version..."
-                    onKeyDown={e => e.key === "Enter" && handleSaveCommit()}
-                    style={{ ...input, marginBottom: 0, flex: 1 }}
-                  />
-                  <button onClick={handleSaveCommit} style={btnPrimary}>Save</button>
-                  <button onClick={() => { setCommitting(false); setMessage("") }} style={btnGhost}>Cancel</button>
+                <div>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                    <input
+                      value={message}
+                      onChange={e => setMessage(e.target.value)}
+                      placeholder="Describe this version..."
+                      onKeyDown={e => e.key === "Enter" && handleSaveCommit()}
+                      style={{ ...input, marginBottom: 0, flex: 1 }}
+                    />
+                    <button
+                      onClick={handleSaveCommit}
+                      disabled={uploading}
+                      style={{ ...btnPrimary, opacity: uploading ? 0.6 : 1 }}
+                    >
+                      {uploading ? "Uploading..." : "Save"}
+                    </button>
+                    <button
+                      onClick={() => { setCommitting(false); setMessage(""); setFile(null); setUploadError("") }}
+                      disabled={uploading}
+                      style={btnGhost}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  <input type="file" onChange={e => setFile(e.target.files[0] || null)} />
+                  {file && (
+                    <p style={{ fontSize: 12, color: c.textSoft, marginTop: 6 }}>
+                      {file.name} · {formatBytes(file.size)}
+                    </p>
+                  )}
+                  {uploadError && (
+                    <p style={{ fontSize: 12, color: c.danger, marginTop: 6 }}>{uploadError}</p>
+                  )}
                 </div>
               )}
             </div>
@@ -490,6 +544,11 @@ function App() {
                         <p style={{ fontSize: 12, color: c.textFaint }}>
                           v1.0.{projectCommits.length - 1 - index} · {timeAgo(commit.created_at)}
                         </p>
+                        {commit.file_name && (
+                          <p style={{ fontSize: 12, color: c.teal, marginTop: 2 }}>
+                            📎 {commit.file_name} · {formatBytes(commit.file_size)}
+                          </p>
+                        )}
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
                         <span style={{ fontSize: 12, color: c.teal }}>{activeCommit?.id === commit.id ? "Hide" : "Plugins"}</span>
