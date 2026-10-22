@@ -2,7 +2,7 @@ import { useState, useEffect } from "react"
 import { supabase } from "./supabase"
 import Auth from "./Auth"
 import Landing from "./Landing"
-import { uploadFile, formatBytes } from "./upload"
+import { uploadFile, getDownloadUrl, formatBytes } from "./upload"
 
 // ── Design tokens ───────────────────────────────────
 const c = {
@@ -61,6 +61,7 @@ function App() {
   const [file, setFile] = useState(null)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState("")
+  const [downloadingId, setDownloadingId] = useState(null) // which commit is preparing a download
 
   const [addingProject, setAddingProject] = useState(false)
   const [editingProject, setEditingProject] = useState(false)
@@ -155,7 +156,7 @@ function App() {
     return found ? timeAgo(found.created_at) : "No commits yet"
   }
 
-  // ── COMMITS: create + delete ─────────────────────
+  // ── COMMITS: create + delete + download ──────────
   async function handleSaveCommit() {
     if (!message.trim() || uploading) return
     setUploadError("")
@@ -212,6 +213,22 @@ function App() {
     } else {
       setActiveCommit(commit)
       fetchPlugins(commit.id)
+    }
+  }
+
+  // Ask our server function for a short-lived download link, then
+  // send the browser to it. The reply is marked "attachment", so the
+  // browser saves the file and stays on this page.
+  async function handleDownload(commit) {
+    setDownloadingId(commit.id)
+    try {
+      const url = await getDownloadUrl(commit.id)
+      window.location.assign(url)
+    } catch (err) {
+      console.error(err)
+      alert(err.message)
+    } finally {
+      setDownloadingId(null)
     }
   }
 
@@ -483,7 +500,7 @@ function App() {
               <span style={{ background: c.tealSoft, color: c.teal, padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 500 }}>{selected.daw} {selected.daw_version}</span>
             </div>
 
-            {/* Commit button / form (now with file picker) */}
+            {/* Commit button / form (with file picker) */}
             <div style={{ marginBottom: 24 }}>
               {!committing ? (
                 <button onClick={() => setCommitting(true)} style={btnPrimary}>+ Commit</button>
@@ -551,6 +568,14 @@ function App() {
                         )}
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                        {commit.file_url && (
+                          <span
+                            onClick={(e) => { e.stopPropagation(); handleDownload(commit) }}
+                            style={{ fontSize: 12, color: c.teal, cursor: "pointer", fontWeight: 500 }}
+                          >
+                            {downloadingId === commit.id ? "Preparing..." : "Download"}
+                          </span>
+                        )}
                         <span style={{ fontSize: 12, color: c.teal }}>{activeCommit?.id === commit.id ? "Hide" : "Plugins"}</span>
                         <span onClick={(e) => { e.stopPropagation(); handleDeleteCommit(commit.id) }} style={{ fontSize: 12, color: c.textFaint }}>✕</span>
                       </div>
