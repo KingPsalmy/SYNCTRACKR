@@ -58,3 +58,21 @@ export async function getDownloadUrl(commitId) {
   const { downloadUrl } = await res.json()
   return downloadUrl
 }
+
+export async function deleteOnServer({ commitId, projectId }) {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session) throw new Error("Not logged in")
+
+  const res = await fetch("/api/delete", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify({ commitId, projectId }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.error || `Delete failed (${res.status})`)
+  }
+}

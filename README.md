@@ -1,16 +1,53 @@
-# React + Vite
+# SyncTrackr
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Music-project version history built with React/Vite, Supabase, and Cloudflare Pages Functions. Supabase holds accounts and project records; Cloudflare R2 holds attached files.
 
-Currently, two official plugins are available:
+## Local development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Install dependencies with `npm ci`. Local configuration is kept in ignored files:
 
-## React Compiler
+- `.env`: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`.
+- `.dev.vars`: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `R2_ENDPOINT`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Never commit these files or paste their values into logs or chat.
 
-## Expanding the ESLint configuration
+Run `npm run dev`, then open http://localhost:5173 in Chrome. This builds the initial static files and starts both Vite and Wrangler. Keep that terminal running. Ctrl+C stops both servers. If an older Vite process is already running, stop it first; the frontend deliberately refuses to choose another port because auth redirects and R2 CORS depend on the configured origin.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+For separate terminals, use `npm run dev:web` and `npm run dev:api` (run `npm run build` once before the API command). Vite forwards `/api` to Wrangler at `127.0.0.1:8788`. Wrangler uses `.dev.vars` and watches the functions. Tests live outside `functions/` so Cloudflare does not bundle them as endpoints.
+
+### Diagnosing uploads
+
+Run in PowerShell:
+
+```powershell
+curl.exe -i -X POST http://localhost:5173/api/upload-url
+```
+
+Without a login token, a working API returns `401` and `{"error":"Not logged in"}`. This verifies the local route, not an authenticated upload.
+
+- A blank `502` with port 8788 unavailable means the Functions server is not running. Start both servers with `npm run dev`.
+- A JSON error such as `Could not check your storage` comes from the function and needs Supabase configuration/function checks.
+- An R2 PUT error happens after the upload link was issued; inspect the storage response and CORS configuration.
+
+## Checks
+
+```powershell
+npm run lint
+npm test
+npm run build
+```
+
+The automated endpoint tests mock upstream services. Real Supabase permissions, R2 uploads/downloads, and two-account isolation still require integration verification. See `supabase/README.md` for the read-only database inspection workflow.
+
+## Deployment
+
+GitHub pushes and Cloudflare Pages deployments are separate. A Git push does not update `synctrackr.pages.dev`.
+
+When ready to deploy explicitly:
+
+```powershell
+npm run build
+npx wrangler pages deploy dist --project-name synctrackr --branch main
+```
+
+Production needs the six Functions variables configured as Pages secrets and the site origin allowed by Supabase authentication and R2 CORS. This repository does not apply database migrations automatically.

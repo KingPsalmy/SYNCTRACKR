@@ -1,22 +1,15 @@
 import { useState, useEffect } from "react"
 import { supabase } from "./supabase"
-import Auth from "./Auth"
 import Landing from "./Landing"
-import { uploadFile, getDownloadUrl, formatBytes } from "./upload"
+import Login from "./Login"
+import Dashboard from "./Dashboard"
+import { ProjectView, ProjectForm } from "./ProjectView"
+import { Logo } from "./ui"
+import { baseCss } from "./theme"
+import { uploadFile, getDownloadUrl, deleteOnServer, formatBytes } from "./upload"
 
-// ── Design tokens ───────────────────────────────────
-const c = {
-  bg: "#F7FAF9",
-  surface: "#FFFFFF",
-  border: "#E4E9E8",
-  teal: "#0E8074",
-  tealDark: "#0B685F",
-  tealSoft: "#E6F3F1",
-  text: "#111827",
-  textSoft: "#6B7280",
-  textFaint: "#9CA3AF",
-  danger: "#DC2626",
-}
+// ── Constants ───────────────────────────────────────
+const FREE_QUOTA_BYTES = 5 * 1024 ** 3 // keep in sync with upload-url.js
 
 // Turns a timestamp into "2h ago", "Yesterday", "3d ago" etc.
 function timeAgo(dateString) {
@@ -33,17 +26,25 @@ function timeAgo(dateString) {
   return `${Math.floor(diff / 86400)}d ago`
 }
 
-// Deterministic color tile per DAW name, so the same DAW always
-// gets the same tile color — real, derived data, not a random placeholder.
+// A colour per DAW, so the same DAW always gets the same project colour.
+// The four DAWs you already had keep their exact colours. Any other DAW name is turned into a number
+// (a "hash") and that number picks one colour from the list, so it is stable too.
 const dawColors = {
   "FL Studio": "#F97316",
   "Ableton Live": "#22C55E",
   "Logic Pro": "#38BDF8",
   "Pro Tools": "#A78BFA",
 }
+const extraColors = ["#F59E0B", "#EC4899", "#14B8A6", "#6366F1", "#84CC16", "#EF4444", "#0EA5E9"]
 function dawColor(daw) {
-  return dawColors[daw] || "#94A3B8"
+  if (!daw || daw === "Unknown") return "#94A3B8"
+  if (dawColors[daw]) return dawColors[daw]
+  let hash = 0
+  for (const ch of daw) hash = (hash * 31 + ch.charCodeAt(0)) % 997
+  return extraColors[hash % extraColors.length]
 }
+
+const emptyProjectForm = { name: "", bpm: "", key: "", daw: "", version: "" }
 
 function App() {
   const [session, setSession] = useState(null)
@@ -53,7 +54,6 @@ function App() {
   const [projects, setProjects] = useState([])
   const [allCommits, setAllCommits] = useState([]) // every commit, across every project
   const [selected, setSelected] = useState(null)
-  const [plugins, setPlugins] = useState([])
   const [activeCommit, setActiveCommit] = useState(null)
 
   const [committing, setCommitting] = useState(false)
@@ -65,23 +65,79 @@ function App() {
 
   const [addingProject, setAddingProject] = useState(false)
   const [editingProject, setEditingProject] = useState(false)
-  const [projectForm, setProjectForm] = useState({ name: "", bpm: "", key: "", daw: "", version: "" })
+  const [projectForm, setProjectForm] = useState(emptyProjectForm)
 
-  const [search, setSearch] = useState("")
   const [view, setView] = useState("overview") // overview | project
 
   // ── AUTH ──────────────────────────────────────────
   useEffect(() => {
+    // The id of the person we have already loaded data for.
+    // It is a plain variable (not state) because we only need it inside this effect.
+    let loadedUserId = null
+
+    // Called whenever Supabase tells us about the session.
+    // Supabase also reports "events" when you return to the tab or when its token refreshes.
+    // Those are the same person, so we skip them. Without this check, coming back to the tab
+    // reloaded everything and jumped you back to your first project.
+    function handleSession(newSession) {
+      setSession(newSession)
+      const newId = newSession?.user?.id ?? null
+      if (newId === loadedUserId) return
+      loadedUserId = newId
+      if (newSession) fetchAll()
+      else resetData()
+    }
+
     supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session)
-      if (session) fetchAll()
+      if (session) handleSession(session)
       else setLoading(false)
     })
-    supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session)
-      if (session) fetchAll()
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      handleSession(session)
     })
+
+    // Cleanup: stop listening when this component goes away.
+    return () => subscription.unsubscribe()
   }, [])
+
+  // When someone signs out, clear everything so the next person never sees old data.
+  function resetData() {
+    setProjects([])
+    setAllCommits([])
+    setSelected(null)
+
+    setActiveCommit(null)
+    setView("overview")
+    setAddingProject(false)
+    setEditingProject(false)
+    setLoading(false)
+  }
+
+  // ── SIGN-IN ACTIONS (used by the Login page) ──────
+  // Each one THROWS on failure. The Login page catches the error and shows its message.
+  async function handleGoogle() {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      // After Google finishes, send the person back to the same site they started on:
+      // localhost while you develop, your live address in production. (Same as your old Auth.jsx.)
+      options: { redirectTo: window.location.origin },
+    })
+    if (error) throw error
+  }
+
+  async function handleEmailAuth(mode, email, password) {
+    if (mode === "signin") {
+      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) throw error
+      return
+    }
+    const { data, error } = await supabase.auth.signUp({ email, password })
+    if (error) throw error
+    // If email confirmation is switched on in Supabase, there is no session yet.
+    // Returning a string makes the Login page show it as a message.
+    if (!data.session) return "Check your email to confirm your account, then sign in."
+  }
 
   // ── FETCHING ──────────────────────────────────────
   // One pass: get every project, then every commit for those projects.
@@ -118,42 +174,56 @@ function App() {
     setLoading(false)
   }
 
-  async function fetchPlugins(commitId) {
-    const { data, error } = await supabase
-      .from("plugins")
-      .select("*")
-      .eq("commit_id", commitId)
-      .order("chain_order", { ascending: true })
-    if (error) console.error(error)
-    else setPlugins(data)
-  }
 
   // ── DERIVED, REAL DATA ────────────────────────────
   // Commits belonging to the currently open project
-  const projectCommits = selected ? allCommits.filter(c2 => c2.project_id === selected.id) : []
+  const projectCommits = selected ? allCommits.filter(cm => cm.project_id === selected.id) : []
 
   // The single most recent commit across everything the user owns
   const latestCommit = allCommits[0] || null
   const latestCommitProject = latestCommit ? projects.find(p => p.id === latestCommit.project_id) : null
 
-  // A real activity feed — just the last 5 commits, newest first,
+  // A real activity feed: just the last 5 commits, newest first,
   // each one labelled with which project it belongs to.
   const recentActivity = allCommits.slice(0, 5).map(commit => ({
-    ...commit,
-    projectName: projects.find(p => p.id === commit.project_id)?.name || "Unknown project",
+    id: commit.id,
+    message: commit.message,
+    project: projects.find(p => p.id === commit.project_id)?.name || "Unknown project",
+    when: timeAgo(commit.created_at),
   }))
 
-  const filteredProjects = projects.filter(p =>
-    p.name.toLowerCase().includes(search.toLowerCase())
-  )
+  const usedBytes = allCommits.reduce((sum, cm) => sum + (Number(cm.file_size) || 0), 0)
+  const usedPercent = Math.min(100, (usedBytes / FREE_QUOTA_BYTES) * 100) // 0 to 100
 
   function commitCountFor(projectId) {
-    return allCommits.filter(c2 => c2.project_id === projectId).length
+    return allCommits.filter(cm => cm.project_id === projectId).length
   }
 
   function lastActivityFor(projectId) {
-    const found = allCommits.find(c2 => c2.project_id === projectId)
-    return found ? timeAgo(found.created_at) : "No commits yet"
+    const found = allCommits.find(cm => cm.project_id === projectId)
+    return found ? timeAgo(found.created_at) : ""
+  }
+
+  // ── NAVIGATION ────────────────────────────────────
+  function goOverview() {
+    setView("overview")
+    setAddingProject(false)
+    setEditingProject(false)
+  }
+
+  function openProject(id) {
+    const project = projects.find(p => p.id === id)
+    if (!project) return
+    setSelected(project)
+    setView("project")
+    setActiveCommit(null)
+    // Close any open form and clear a half-typed version note so it does not leak into another project.
+    setAddingProject(false)
+    setEditingProject(false)
+    setCommitting(false)
+    setMessage("")
+    setFile(null)
+    setUploadError("")
   }
 
   // ── COMMITS: create + delete + download ──────────
@@ -195,24 +265,29 @@ function App() {
     setFile(null)
   }
 
+  // Delete goes through our server function, which removes the file
+  // from R2 first and the database row second. The screen only
+  // changes after the server confirms.
   async function handleDeleteCommit(commitId) {
-    if (!confirm("Delete this commit? This can't be undone.")) return
-    const { error } = await supabase.from("commits").delete().eq("id", commitId)
-    if (error) { console.error(error); return }
-    setAllCommits(allCommits.filter(c2 => c2.id !== commitId))
+    if (!confirm("Delete this version and its attached file? This can't be undone.")) return
+    try {
+      await deleteOnServer({ commitId })
+    } catch (err) {
+      console.error(err)
+      alert(err.message)
+      return
+    }
+    setAllCommits(allCommits.filter(cm => cm.id !== commitId))
     if (activeCommit?.id === commitId) {
       setActiveCommit(null)
-      setPlugins([])
     }
   }
 
   function handleCommitClick(commit) {
     if (activeCommit?.id === commit.id) {
       setActiveCommit(null)
-      setPlugins([])
     } else {
       setActiveCommit(commit)
-      fetchPlugins(commit.id)
     }
   }
 
@@ -234,7 +309,7 @@ function App() {
 
   // ── PROJECTS: create, edit, delete ───────────────
   function openNewProjectForm() {
-    setProjectForm({ name: "", bpm: "", key: "", daw: "", version: "" })
+    setProjectForm(emptyProjectForm)
     setEditingProject(false)
     setAddingProject(true)
   }
@@ -249,6 +324,11 @@ function App() {
     })
     setAddingProject(true)
     setEditingProject(true)
+  }
+
+  function closeProjectForm() {
+    setAddingProject(false)
+    setEditingProject(false)
   }
 
   async function handleCreateProject() {
@@ -294,319 +374,115 @@ function App() {
   }
 
   async function handleDeleteProject(id) {
-    if (!confirm("Delete this project and all its commits? This can't be undone.")) return
-    const { error } = await supabase.from("projects").delete().eq("id", id)
-    if (error) { console.error(error); return }
+    if (!confirm("Delete this project, all its versions and their files? This can't be undone.")) return
+    try {
+      await deleteOnServer({ projectId: id })
+    } catch (err) {
+      console.error(err)
+      alert(err.message)
+      return
+    }
     const remaining = projects.filter(p => p.id !== id)
     setProjects(remaining)
-    setAllCommits(allCommits.filter(c2 => c2.project_id !== id))
+    setAllCommits(allCommits.filter(cm => cm.project_id !== id))
     if (selected?.id === id) {
       setSelected(remaining[0] || null)
       setView("overview")
     }
   }
 
-  // ── SHARED STYLES ─────────────────────────────────
-  const input = {
-    width: "100%", background: c.surface, border: `1px solid ${c.border}`,
-    color: c.text, padding: "10px 14px", fontSize: 14,
-    borderRadius: 8, outline: "none", marginBottom: 10, fontFamily: "inherit",
-  }
-  const card = {
-    background: c.surface, border: `1px solid ${c.border}`, borderRadius: 12,
-  }
-  const btnPrimary = {
-    background: c.teal, color: "#fff", border: "none", borderRadius: 8,
-    padding: "10px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer",
-  }
-  const btnGhost = {
-    background: "transparent", color: c.textSoft, border: `1px solid ${c.border}`,
-    borderRadius: 8, padding: "10px 18px", fontSize: 13, fontWeight: 500, cursor: "pointer",
-  }
-
   // ── SCREEN ROUTING ────────────────────────────────
+  // While we are still checking whether someone is signed in, show a quiet splash.
+  // Without it, a signed-in person would see the landing page flash for a moment on every reload.
+  if (!session && loading) {
+    return (
+      <div className="sy-root" style={{ minHeight: "100vh", display: "grid", placeItems: "center" }}>
+        <style>{baseCss}</style>
+        <Logo />
+      </div>
+    )
+  }
   if (!session && !showAuth) return <Landing onGetStarted={() => setShowAuth(true)} />
-  if (!session && showAuth) return <Auth />
+  if (!session && showAuth) {
+    return <Login onGoogle={handleGoogle} onEmailAuth={handleEmailAuth} onBack={() => setShowAuth(false)} />
+  }
 
   const firstName = session?.user?.user_metadata?.full_name?.split(" ")[0]
     || session?.user?.email?.split("@")[0]
     || "there"
 
-  const hour = new Date().getHours()
-  const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"
+  // What the main area shows. null means "show the overview".
+  let content = null
+  if (addingProject) {
+    content = (
+      <ProjectForm
+        editing={editingProject}
+        form={projectForm}
+        onChange={(field, value) => setProjectForm(f => ({ ...f, [field]: value }))}
+        onSubmit={editingProject ? handleUpdateProject : handleCreateProject}
+        onCancel={closeProjectForm}
+      />
+    )
+  } else if (view === "project" && selected) {
+    content = (
+      <ProjectView
+        project={selected}
+        commits={projectCommits}
+        activeCommitId={activeCommit?.id}
+        committing={committing}
+        message={message}
+        file={file}
+        uploading={uploading}
+        uploadError={uploadError}
+        downloadingId={downloadingId}
+        timeAgo={timeAgo}
+        onEdit={openEditProjectForm}
+        onStartCommit={() => setCommitting(true)}
+        onCancelCommit={() => { setCommitting(false); setMessage(""); setFile(null); setUploadError("") }}
+        onMessageChange={setMessage}
+        onFileChange={setFile}
+        onSave={handleSaveCommit}
+        onToggleCommit={handleCommitClick}
+        onDownload={handleDownload}
+        onDeleteCommit={handleDeleteCommit}
+      />
+    )
+  }
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh", background: c.bg, color: c.text, fontFamily: "'Inter', system-ui, sans-serif" }}>
-
-      {/* Sidebar */}
-      <div style={{ width: 240, borderRight: `1px solid ${c.border}`, background: c.surface, display: "flex", flexDirection: "column", padding: 20 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 24 }}>
-          <span style={{ fontSize: 18, fontWeight: 700, color: c.teal }}>SyncTrackr</span>
-        </div>
-
-        <button onClick={openNewProjectForm} style={{ ...btnPrimary, width: "100%", marginBottom: 20 }}>
-          + New Project
-        </button>
-
-        <div
-          onClick={() => setView("overview")}
-          style={{
-            padding: "9px 12px", borderRadius: 8, fontSize: 14, fontWeight: 500, cursor: "pointer", marginBottom: 4,
-            background: view === "overview" ? c.tealSoft : "transparent",
-            color: view === "overview" ? c.teal : c.textSoft,
-          }}
-        >
-          Overview
-        </div>
-
-        <div style={{ flex: 1, overflowY: "auto", marginTop: 8 }}>
-          <p style={{ fontSize: 11, color: c.textFaint, fontWeight: 600, letterSpacing: "0.04em", margin: "12px 4px 6px" }}>PROJECTS</p>
-          {projects.map(p => (
-            <div
-              key={p.id}
-              onClick={() => { setSelected(p); setView("project"); setActiveCommit(null) }}
-              style={{
-                display: "flex", justifyContent: "space-between", alignItems: "center",
-                padding: "8px 12px", borderRadius: 8, cursor: "pointer", marginBottom: 2,
-                background: view === "project" && selected?.id === p.id ? c.tealSoft : "transparent",
-                color: view === "project" && selected?.id === p.id ? c.teal : c.textSoft,
-              }}
-            >
-              <span style={{ fontSize: 13.5, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
-              <span onClick={(e) => { e.stopPropagation(); handleDeleteProject(p.id) }} style={{ fontSize: 12, color: c.textFaint }}>✕</span>
-            </div>
-          ))}
-        </div>
-
-        <div onClick={() => supabase.auth.signOut()} style={{ fontSize: 13, color: c.textFaint, cursor: "pointer", paddingTop: 12, borderTop: `1px solid ${c.border}` }}>
-          Sign out
-        </div>
-      </div>
-
-      {/* Main */}
-      <div style={{ flex: 1, padding: "32px 40px", overflowY: "auto" }}>
-
-        {addingProject ? (
-          <div style={{ maxWidth: 420 }}>
-            <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20 }}>{editingProject ? "Edit project" : "New project"}</h1>
-            <input style={input} placeholder="Project name" value={projectForm.name} onChange={e => setProjectForm({ ...projectForm, name: e.target.value })} />
-            <input style={input} placeholder="BPM" value={projectForm.bpm} onChange={e => setProjectForm({ ...projectForm, bpm: e.target.value })} />
-            <input style={input} placeholder="Key (e.g. F minor)" value={projectForm.key} onChange={e => setProjectForm({ ...projectForm, key: e.target.value })} />
-            <input style={input} placeholder="DAW (e.g. FL Studio)" value={projectForm.daw} onChange={e => setProjectForm({ ...projectForm, daw: e.target.value })} />
-            <input style={input} placeholder="DAW version" value={projectForm.version} onChange={e => setProjectForm({ ...projectForm, version: e.target.value })} />
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <button onClick={editingProject ? handleUpdateProject : handleCreateProject} style={btnPrimary}>
-                {editingProject ? "Save changes" : "Create project"}
-              </button>
-              <button onClick={() => { setAddingProject(false); setEditingProject(false) }} style={btnGhost}>Cancel</button>
-            </div>
-          </div>
-
-        ) : view === "overview" ? (
-          <>
-            <h1 style={{ fontSize: 26, fontWeight: 700, marginBottom: 4 }}>{greeting}, {firstName} 👋</h1>
-            <p style={{ color: c.textSoft, fontSize: 14, marginBottom: 24 }}>Every commit tells a story. Yours is safe with us.</p>
-
-            <input
-              placeholder="Search projects..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              style={{ ...input, maxWidth: 360, marginBottom: 28 }}
-            />
-
-            {/* Real stats row — no invented numbers */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 32 }}>
-              <div style={{ ...card, padding: 20 }}>
-                <p style={{ fontSize: 13, color: c.textSoft, marginBottom: 6 }}>Projects</p>
-                <p style={{ fontSize: 26, fontWeight: 700 }}>{projects.length}</p>
-              </div>
-              <div style={{ ...card, padding: 20 }}>
-                <p style={{ fontSize: 13, color: c.textSoft, marginBottom: 6 }}>Versions saved</p>
-                <p style={{ fontSize: 26, fontWeight: 700 }}>{allCommits.length}</p>
-              </div>
-              <div style={{ ...card, padding: 20 }}>
-                <p style={{ fontSize: 13, color: c.textSoft, marginBottom: 6 }}>Last activity</p>
-                <p style={{ fontSize: 26, fontWeight: 700 }}>{latestCommit ? timeAgo(latestCommit.created_at) : "—"}</p>
-              </div>
-            </div>
-
-            {loading ? (
-              <p style={{ color: c.textFaint, fontSize: 13 }}>Loading...</p>
-            ) : projects.length === 0 ? (
-              <div style={{ ...card, padding: 32, textAlign: "center" }}>
-                <p style={{ color: c.textSoft, fontSize: 14, marginBottom: 12 }}>No projects yet.</p>
-                <button onClick={openNewProjectForm} style={btnPrimary}>Create your first project</button>
-              </div>
-            ) : (
-              <>
-                <p style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Recent projects</p>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 16, marginBottom: 32 }}>
-                  {filteredProjects.slice(0, 6).map(p => (
-                    <div
-                      key={p.id}
-                      onClick={() => { setSelected(p); setView("project") }}
-                      style={{ ...card, cursor: "pointer", overflow: "hidden" }}
-                    >
-                      <div style={{ height: 64, background: dawColor(p.daw) }} />
-                      <div style={{ padding: 14 }}>
-                        <p style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>{p.name}</p>
-                        <p style={{ fontSize: 12, color: c.textSoft, marginBottom: 8 }}>{p.daw} {p.daw_version}</p>
-                        <p style={{ fontSize: 11.5, color: c.textFaint }}>
-                          {commitCountFor(p.id)} commit{commitCountFor(p.id) !== 1 ? "s" : ""} · {lastActivityFor(p.id)}
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {latestCommit && (
-                  <div style={{ ...card, padding: 20, marginBottom: 32 }}>
-                    <p style={{ fontSize: 13, color: c.textSoft, marginBottom: 10, fontWeight: 600 }}>Latest version</p>
-                    <p style={{ fontSize: 15, fontWeight: 600 }}>{latestCommitProject?.name}</p>
-                    <p style={{ fontSize: 13, color: c.textSoft, marginBottom: 2 }}>{latestCommit.message}</p>
-                    <p style={{ fontSize: 12, color: c.textFaint }}>{timeAgo(latestCommit.created_at)}</p>
-                  </div>
-                )}
-
-                <p style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Recent activity</p>
-                {recentActivity.length === 0 ? (
-                  <p style={{ color: c.textFaint, fontSize: 13 }}>No commits yet — activity will show up here once you start saving versions.</p>
-                ) : (
-                  <div style={{ ...card, padding: 4 }}>
-                    {recentActivity.map(a => (
-                      <div key={a.id} style={{ display: "flex", justifyContent: "space-between", padding: "12px 16px", borderBottom: `1px solid ${c.border}` }}>
-                        <div>
-                          <p style={{ fontSize: 13.5, fontWeight: 500 }}>{a.message}</p>
-                          <p style={{ fontSize: 12, color: c.textSoft }}>{a.projectName}</p>
-                        </div>
-                        <span style={{ fontSize: 12, color: c.textFaint, whiteSpace: "nowrap" }}>{timeAgo(a.created_at)}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-          </>
-
-        ) : selected ? (
-          <>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
-              <h1 style={{ fontSize: 24, fontWeight: 700 }}>{selected.name}</h1>
-              <span onClick={openEditProjectForm} style={{ fontSize: 13, color: c.teal, cursor: "pointer", fontWeight: 500 }}>Edit</span>
-            </div>
-            <div style={{ display: "flex", gap: 8, marginBottom: 24, flexWrap: "wrap" }}>
-              <span style={{ background: c.tealSoft, color: c.teal, padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 500 }}>{selected.bpm} BPM</span>
-              <span style={{ background: c.tealSoft, color: c.teal, padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 500 }}>{selected.key}</span>
-              <span style={{ background: c.tealSoft, color: c.teal, padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 500 }}>{selected.daw} {selected.daw_version}</span>
-            </div>
-
-            {/* Commit button / form (with file picker) */}
-            <div style={{ marginBottom: 24 }}>
-              {!committing ? (
-                <button onClick={() => setCommitting(true)} style={btnPrimary}>+ Commit</button>
-              ) : (
-                <div>
-                  <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-                    <input
-                      value={message}
-                      onChange={e => setMessage(e.target.value)}
-                      placeholder="Describe this version..."
-                      onKeyDown={e => e.key === "Enter" && handleSaveCommit()}
-                      style={{ ...input, marginBottom: 0, flex: 1 }}
-                    />
-                    <button
-                      onClick={handleSaveCommit}
-                      disabled={uploading}
-                      style={{ ...btnPrimary, opacity: uploading ? 0.6 : 1 }}
-                    >
-                      {uploading ? "Uploading..." : "Save"}
-                    </button>
-                    <button
-                      onClick={() => { setCommitting(false); setMessage(""); setFile(null); setUploadError("") }}
-                      disabled={uploading}
-                      style={btnGhost}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                  <input type="file" onChange={e => setFile(e.target.files[0] || null)} />
-                  {file && (
-                    <p style={{ fontSize: 12, color: c.textSoft, marginTop: 6 }}>
-                      {file.name} · {formatBytes(file.size)}
-                    </p>
-                  )}
-                  {uploadError && (
-                    <p style={{ fontSize: 12, color: c.danger, marginTop: 6 }}>{uploadError}</p>
-                  )}
-                </div>
-              )}
-            </div>
-
-            <p style={{ fontSize: 13, color: c.textSoft, marginBottom: 12 }}>
-              {projectCommits.length} commit{projectCommits.length !== 1 ? "s" : ""}
-            </p>
-
-            {projectCommits.length === 0 ? (
-              <p style={{ color: c.textFaint, fontSize: 13 }}>No commits yet. Hit + Commit to save your first version.</p>
-            ) : (
-              <div>
-                {projectCommits.map((commit, index) => (
-                  <div key={commit.id} style={{ ...card, marginBottom: 8, overflow: "hidden" }}>
-                    <div
-                      onClick={() => handleCommitClick(commit)}
-                      style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", cursor: "pointer" }}
-                    >
-                      <div>
-                        <p style={{ fontSize: 13.5, fontWeight: 500 }}>{commit.message}</p>
-                        <p style={{ fontSize: 12, color: c.textFaint }}>
-                          v1.0.{projectCommits.length - 1 - index} · {timeAgo(commit.created_at)}
-                        </p>
-                        {commit.file_name && (
-                          <p style={{ fontSize: 12, color: c.teal, marginTop: 2 }}>
-                            📎 {commit.file_name} · {formatBytes(commit.file_size)}
-                          </p>
-                        )}
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                        {commit.file_url && (
-                          <span
-                            onClick={(e) => { e.stopPropagation(); handleDownload(commit) }}
-                            style={{ fontSize: 12, color: c.teal, cursor: "pointer", fontWeight: 500 }}
-                          >
-                            {downloadingId === commit.id ? "Preparing..." : "Download"}
-                          </span>
-                        )}
-                        <span style={{ fontSize: 12, color: c.teal }}>{activeCommit?.id === commit.id ? "Hide" : "Plugins"}</span>
-                        <span onClick={(e) => { e.stopPropagation(); handleDeleteCommit(commit.id) }} style={{ fontSize: 12, color: c.textFaint }}>✕</span>
-                      </div>
-                    </div>
-
-                    {activeCommit?.id === commit.id && (
-                      <div style={{ borderTop: `1px solid ${c.border}`, padding: 16, background: c.bg }}>
-                        <p style={{ fontSize: 11, color: c.teal, fontWeight: 600, letterSpacing: "0.04em", marginBottom: 10 }}>PLUGIN INTELLIGENCE</p>
-                        {plugins.length === 0 ? (
-                          <p style={{ fontSize: 12, color: c.textFaint }}>No plugin data stored for this commit.</p>
-                        ) : (
-                          plugins.map((plugin, i) => (
-                            <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", marginBottom: 6, background: c.surface, borderRadius: 8, border: `1px solid ${c.border}` }}>
-                              <div>
-                                <p style={{ fontSize: 12.5, fontWeight: 500 }}>{plugin.name}</p>
-                                <p style={{ fontSize: 11, color: c.textFaint }}>Track: {plugin.track} · Chain #{plugin.chain_order} · Preset: {plugin.preset}</p>
-                              </div>
-                              <span style={{ fontSize: 11, color: c.textFaint }}>v{plugin.version}</span>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
-        ) : null}
-      </div>
-    </div>
+    <Dashboard
+      userName={firstName}
+      loading={loading}
+      projects={projects.map(p => ({
+        id: p.id,
+        name: p.name,
+        subtitle: `${p.daw || ""} ${p.daw_version || ""}`.trim(),
+        color: dawColor(p.daw),
+        versionCount: commitCountFor(p.id),
+        lastLabel: lastActivityFor(p.id),
+      }))}
+      stats={{
+        projects: projects.length,
+        versions: allCommits.length,
+        lastActivity: latestCommit ? timeAgo(latestCommit.created_at) : "—",
+      }}
+      latestVersion={latestCommit ? {
+        projectId: latestCommit.project_id,
+        project: latestCommitProject?.name || "Unknown project",
+        message: latestCommit.message,
+        when: timeAgo(latestCommit.created_at),
+      } : null}
+      activity={recentActivity}
+      storage={{ used: formatBytes(usedBytes), total: formatBytes(FREE_QUOTA_BYTES), percent: usedPercent }}
+      activeId={view === "project" && selected ? selected.id : "overview"}
+      onNewProject={openNewProjectForm}
+      onOpenProject={openProject}
+      onDeleteProject={handleDeleteProject}
+      onGoOverview={goOverview}
+      onSignOut={() => supabase.auth.signOut()}
+    >
+      {content}
+    </Dashboard>
   )
 }
 
