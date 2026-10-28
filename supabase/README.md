@@ -1,6 +1,8 @@
 # Database verification
 
-The live schema has not yet been exported or verified. `verify.sql` is a read-only
+Parts of the live schema have been reported by the owner; see
+`verification-status.md` for evidence and remaining checks. The complete schema
+has not yet been exported. `verify.sql` is a read-only
 inspection script, not a migration. It must not be treated as evidence that the
 production database already contains the expected protections.
 
@@ -15,8 +17,10 @@ their definitions, not just their presence. Numbering must use a persistent
 project counter and remain unique under concurrent inserts. Inserts must verify
 project ownership, and updates must prevent moving commits to another project.
 
-Once these results are available, prepare a migration against the actual schema
-and review it before applying. Do not wipe existing records. The frontend now
+The ownership migration in `migrations/202610280001_protect_commit_projects.sql`
+has already been approved and applied by the owner to the current production
+database. Do not rerun it there. Review any future migrations against the actual
+schema before applying. Do not wipe existing records. The frontend now
 uses `version_number` if present and otherwise says “Saved version”; it does not
 invent historical numbers. This frontend change does not implement the counter.
 

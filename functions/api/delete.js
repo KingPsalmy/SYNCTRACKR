@@ -74,8 +74,16 @@ export async function onRequestPost({ request, env }) {
         const path = key.split("/").map(encodeURIComponent).join("/")
         try {
           const res = await r2.fetch(`${env.R2_ENDPOINT}/${env.R2_BUCKET}/${path}`, { method: "DELETE" })
+          if (!res.ok) {
+            const body = await res.text()
+            // Log only the status and a bounded service error code. Never log
+            // object paths, credentials, signed requests, or the raw response.
+            const code = body.match(/<Code>([A-Za-z0-9]{1,80})<\/Code>/)?.[1] || "Unknown"
+            console.error("R2 delete failed", { status: res.status, code })
+          }
           return res.ok
-        } catch {
+        } catch (error) {
+          console.error("R2 delete failed", { code: "RequestFailed", type: error?.name || "Error" })
           return false
         }
       })
