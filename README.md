@@ -35,9 +35,21 @@ Without a login token, a working API returns `401` and `{"error":"Not logged in"
 npm run lint
 npm test
 npm run build
+npm run build:functions
 ```
 
 The automated endpoint tests mock upstream services. Real Supabase permissions, R2 uploads/downloads, and two-account isolation still require integration verification. See `supabase/README.md` for the read-only database inspection workflow.
+
+GitHub Actions runs these checks on Windows and Linux for pull requests to `main`,
+pushes to `main` and `codex/**` branches, and manual workflow runs. It installs the
+locked dependencies with Node.js 24 and builds both the frontend and Cloudflare
+Functions. The build uses fake Supabase settings, requires no production secrets,
+and never deploys or applies SQL migrations. Do not publish CI builds to the live
+site; production builds use the real frontend configuration.
+
+Branch protection is a separate repository setting. After the workflow has run,
+the checks can be selected as required checks for `main`; adding the workflow
+alone does not block merging a failing pull request.
 
 ## Deployment
 
