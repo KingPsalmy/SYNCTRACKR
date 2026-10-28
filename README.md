@@ -29,6 +29,19 @@ Without a login token, a working API returns `401` and `{"error":"Not logged in"
 - A JSON error such as `Could not check your storage` comes from the function and needs Supabase configuration/function checks.
 - An R2 PUT error happens after the upload link was issued; inspect the storage response and CORS configuration.
 
+After R2 accepts a file, the app calls `/api/verify-upload`. This authenticated
+function checks project ownership and reads the object size directly from R2
+using a signed HEAD request. The app saves the version only after that size
+matches the selected file. File bytes remain in R2; Supabase stores metadata.
+Verification errors keep the save form open and do not create a version.
+
+This checks presence and size, not a content checksum or DAW compatibility.
+It is a reliability check for the app's save flow, not a database-enforced
+upload guarantee: direct Supabase inserts remain subject to the existing RLS.
+A verification or database failure after a successful PUT can leave an
+unreferenced object in R2. Pending-upload tracking, safe orphan cleanup,
+idempotent saves, and atomic quota reservations are still outstanding.
+
 ## Checks
 
 ```powershell

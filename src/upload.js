@@ -1,30 +1,10 @@
 import { supabase } from "./supabase"
-import { putFile } from "./uploadTransport"
+import { uploadToR2 } from "./uploadWorkflow"
 
 export async function uploadFile(file, projectId, onProgress) {
-  // 1. Get the current login token from the Supabase session.
   const { data: { session } } = await supabase.auth.getSession()
   if (!session) throw new Error("Not logged in")
-
-  // 2. Ask our server function for a presigned upload link.
-  const res = await fetch("/api/upload-url", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${session.access_token}`,
-    },
-    body: JSON.stringify({ projectId, fileName: file.name, fileSize: file.size }),
-  })
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.error || `Upload request failed (${res.status})`)
-  }
-  const { uploadUrl, key } = await res.json()
-
-  // 3. Send the file straight to R2 using that link.
-  await putFile(uploadUrl, file, onProgress)
-
-  return { key, name: file.name, size: file.size }
+  return uploadToR2(file, projectId, session.access_token, onProgress)
 }
 
 // 1536000 -> "1.5 MB"

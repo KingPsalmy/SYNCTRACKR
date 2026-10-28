@@ -35,7 +35,7 @@ export async function onRequestPost({ request, env }) {
   const { projectId, fileName, fileSize } = body || {}
   if (!UUID.test(projectId || "")) return json({ error: "Invalid project" }, 400)
   if (typeof fileName !== "string" || !fileName) return json({ error: "Missing file name" }, 400)
-  if (!Number.isFinite(fileSize) || fileSize <= 0 || fileSize > MAX_FILE_BYTES) {
+  if (!Number.isSafeInteger(fileSize) || fileSize <= 0 || fileSize > MAX_FILE_BYTES) {
     return json({ error: "File too large or empty" }, 400)
   }
 
