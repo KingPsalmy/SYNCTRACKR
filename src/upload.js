@@ -1,6 +1,7 @@
 import { supabase } from "./supabase"
+import { putFile } from "./uploadTransport"
 
-export async function uploadFile(file, projectId) {
+export async function uploadFile(file, projectId, onProgress) {
   // 1. Get the current login token from the Supabase session.
   const { data: { session } } = await supabase.auth.getSession()
   if (!session) throw new Error("Not logged in")
@@ -21,12 +22,7 @@ export async function uploadFile(file, projectId) {
   const { uploadUrl, key } = await res.json()
 
   // 3. Send the file straight to R2 using that link.
-  const put = await fetch(uploadUrl, {
-    method: "PUT",
-    body: file,
-    headers: { "Content-Type": file.type || "application/octet-stream" },
-  })
-  if (!put.ok) throw new Error(`Storage upload failed (${put.status})`)
+  await putFile(uploadUrl, file, onProgress)
 
   return { key, name: file.name, size: file.size }
 }
