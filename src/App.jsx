@@ -7,7 +7,7 @@ import Dashboard from "./Dashboard"
 import { ProjectView, ProjectForm } from "./ProjectView"
 import { Logo } from "./ui"
 import { baseCss } from "./theme"
-import { versionLabel } from "./versionLabel"
+import { buildVersionLabels } from "./versionLabel"
 import { uploadFile, getDownloadUrl, deleteOnServer, formatBytes } from "./upload"
 
 // ── Constants ───────────────────────────────────────
@@ -200,6 +200,7 @@ function App() {
   const projectCommits = selected ? allCommits.filter(cm => cm.project_id === selected.id) : []
 
   // The single most recent commit across everything the user owns
+  const versionLabels = buildVersionLabels(allCommits)
   const latestCommit = allCommits[0] || null
   const latestCommitProject = latestCommit ? projects.find(p => p.id === latestCommit.project_id) : null
 
@@ -207,7 +208,7 @@ function App() {
   // each one labelled with which project it belongs to.
   const recentActivity = allCommits.slice(0, 5).map(commit => ({
     id: commit.id,
-    label: versionLabel(commit),
+    label: versionLabels.get(commit.id),
     message: commit.message,
     project: projects.find(p => p.id === commit.project_id)?.name || "Unknown project",
     when: timeAgo(commit.created_at),
@@ -448,6 +449,7 @@ function App() {
       <ProjectView
         project={selected}
         commits={projectCommits}
+        versionLabels={versionLabels}
         activeCommitId={activeCommit?.id}
         committing={committing}
         message={message}
@@ -492,7 +494,7 @@ function App() {
       latestVersion={latestCommit ? {
         projectId: latestCommit.project_id,
         project: latestCommitProject?.name || "Unknown project",
-        label: versionLabel(latestCommit),
+        label: versionLabels.get(latestCommit.id),
         message: latestCommit.message,
         when: timeAgo(latestCommit.created_at),
       } : null}
