@@ -30,9 +30,11 @@ const css = `
 .pv-file input { display: block; margin-top: 6px; min-height: 40px; font: 400 13.5px 'Inter', sans-serif; max-width: 100%; }
 .pv-file input::file-selector-button { margin-right: 12px; padding: 9px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: 600 13px 'Inter', sans-serif; cursor: pointer; }
 .pv-fileinfo { font-size: 12.5px; color: var(--soft); margin-top: 6px; overflow-wrap: anywhere; }
+.pv-help { font-size: 12.5px; color: var(--soft); margin-top: 8px; }
 .pv-error { color: var(--danger); font-size: 13px; margin-top: 8px; }
 
-.pv-count { font-size: 13.5px; color: var(--soft); margin-bottom: 12px; }
+.pv-count { font-size: 13.5px; color: var(--soft); margin-bottom: 4px; }
+.pv-numbering { font-size: 12.5px; color: var(--soft); margin-bottom: 12px; }
 .pv-empty { background: var(--surface); border: 1px dashed var(--border); border-radius: 14px; padding: 28px 20px; text-align: center; color: var(--soft); }
 
 .pv-commit { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; margin-bottom: 10px; overflow: hidden;
@@ -43,6 +45,7 @@ const css = `
 .pv-commit-main:hover { background: var(--teal-faint); }
 .pv-commit-main b { display: block; font-size: 14.5px; font-weight: 600; overflow-wrap: anywhere; }
 .pv-commit-main span { display: block; font-size: 12.5px; color: var(--faint); }
+.pv-commit-main .pv-note { font-size: 14px; color: var(--text); margin: 3px 0; overflow-wrap: anywhere; }
 .pv-commit-main em { display: block; font-style: normal; font-size: 12.5px; color: var(--teal); margin-top: 2px; overflow-wrap: anywhere; }
 .pv-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; }
 .pv-link { background: none; border: 0; color: var(--teal); font: 600 13px 'Inter', sans-serif; padding: 10px 12px; border-radius: 8px; cursor: pointer; }
@@ -109,12 +112,13 @@ export function ProjectView({
         <form className="pv-commitform" onSubmit={e => { e.preventDefault(); onSave() }}>
           <div className="pv-row">
             <input className="sy-input" value={message} onChange={e => onMessageChange(e.target.value)}
-              placeholder="Describe this version..." aria-label="Version note" autoFocus />
+              placeholder="Version note, e.g. Balanced the vocals" aria-label="Version note" aria-describedby="pv-note-help" autoFocus />
             <button className="sy-btn sy-btn-primary" type="submit" disabled={uploading || !message.trim()}>
               {uploading ? "Uploading..." : "Save"}
             </button>
             <button className="sy-btn sy-btn-ghost" type="button" onClick={onCancelCommit} disabled={uploading}>Cancel</button>
           </div>
+          <p id="pv-note-help" className="pv-help">The version number is assigned automatically when you save.</p>
           <label className="pv-file">
             Attach your project file or a zipped folder (optional)
             <input type="file" onChange={e => onFileChange(e.target.files[0] || null)} />
@@ -124,7 +128,8 @@ export function ProjectView({
         </form>
       )}
 
-      <p className="pv-count">{commits.length} version{commits.length !== 1 ? "s" : ""}</p>
+      <p className="pv-count">{commits.length} saved version{commits.length !== 1 ? "s" : ""}</p>
+      {commits.length > 0 && <p className="pv-numbering">Version numbers stay fixed. Deleted numbers aren't reused.</p>}
 
       {commits.length === 0 ? (
         <div className="pv-empty">No versions yet. Press "Save a version" to add your first.</div>
@@ -136,8 +141,9 @@ export function ProjectView({
               <div className="pv-commit-head">
                 {/* The text area is a real button, so keyboard and screen reader users can open it too */}
                 <button className="pv-commit-main" aria-expanded={open} onClick={() => onToggleCommit(commit)}>
-                  <b>{commit.message}</b>
-                  <span>{versionLabel(commit)} · {timeAgo(commit.created_at)}</span>
+                  <b>{versionLabel(commit)}</b>
+                  {commit.message && <span className="pv-note">Note: {commit.message}</span>}
+                  <span>{timeAgo(commit.created_at)}</span>
                   {commit.file_name && <em>{commit.file_name} · {formatBytes(commit.file_size)}</em>}
                 </button>
                 <div className="pv-actions">
@@ -147,7 +153,7 @@ export function ProjectView({
                     </button>
                   )}
                   <button className="pv-link" onClick={() => onToggleCommit(commit)}>{open ? "Hide plugins" : "Plugins"}</button>
-                  <button className="pv-del" aria-label={`Delete version ${commit.message}`} onClick={() => onDeleteCommit(commit.id)}>×</button>
+                  <button className="pv-del" aria-label={`Delete ${versionLabel(commit)}${commit.message ? `, note: ${commit.message}` : ""}`} onClick={() => onDeleteCommit(commit.id)}>×</button>
                 </div>
               </div>
 
@@ -157,7 +163,7 @@ export function ProjectView({
                   <PluginNotes
                     key={commit.id}
                     commitId={commit.id}
-                    title={commit.message}
+                    title={versionLabel(commit)}
                     fileName={commit.file_name}
                     hasFile={Boolean(commit.file_url)}
                     onDownload={() => onDownload(commit)}
