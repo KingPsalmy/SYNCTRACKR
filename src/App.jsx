@@ -6,6 +6,7 @@ import Dashboard from "./Dashboard"
 import { ProjectView, ProjectForm } from "./ProjectView"
 import { Logo } from "./ui"
 import { baseCss } from "./theme"
+import { versionLabel } from "./versionLabel"
 import { uploadFile, getDownloadUrl, deleteOnServer, formatBytes } from "./upload"
 
 // ── Constants ───────────────────────────────────────
@@ -187,6 +188,7 @@ function App() {
   // each one labelled with which project it belongs to.
   const recentActivity = allCommits.slice(0, 5).map(commit => ({
     id: commit.id,
+    label: versionLabel(commit),
     message: commit.message,
     project: projects.find(p => p.id === commit.project_id)?.name || "Unknown project",
     when: timeAgo(commit.created_at),
@@ -469,6 +471,7 @@ function App() {
       latestVersion={latestCommit ? {
         projectId: latestCommit.project_id,
         project: latestCommitProject?.name || "Unknown project",
+        label: versionLabel(latestCommit),
         message: latestCommit.message,
         when: timeAgo(latestCommit.created_at),
       } : null}

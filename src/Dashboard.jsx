@@ -17,8 +17,8 @@ import { c, baseCss } from "./theme"
 //                   color     = the project's colour, e.g. "#F97316"
 //                   lastLabel = e.g. "Yesterday"
 //   stats         { projects, versions, lastActivity }
-//   latestVersion { projectId, project, message, when }   or null
-//   activity      [{ id, message, project, when }]         newest first
+//   latestVersion { projectId, project, label, message, when }   or null
+//   activity      [{ id, label, message, project, when }]         newest first
 //   storage       { used: "3.1 MB", total: "5.0 GB", percent: 0.06 }   percent is 0 to 100
 //   activeId      "overview" or a project id (highlights the sidebar)
 //   onNewProject, onOpenProject(id), onDeleteProject(id), onGoOverview, onSignOut
@@ -273,8 +273,8 @@ export default function Dashboard({
           {latestVersion ? (
             <div className="db-panel db-in" style={{ "--i": 9 }}>
               <div>
-                <b>{latestVersion.project}</b>
-                <p>{latestVersion.message}</p>
+                <b>{latestVersion.project} · {latestVersion.label}</b>
+                {latestVersion.message && <p>Note: {latestVersion.message}</p>}
                 <em>{latestVersion.when}</em>
               </div>
               {latestVersion.projectId && (
@@ -290,7 +290,7 @@ export default function Dashboard({
             <div className="db-list db-in" style={{ "--i": 11 }}>
               {activity.map((a, i) => (
                 <div key={a.id ?? i} className="db-row">
-                  <div><b>{a.message}</b><span>{a.project}</span></div>
+                  <div><b>{a.project} · {a.label}</b>{a.message && <span>Note: {a.message}</span>}</div>
                   <time>{a.when}</time>
                 </div>
               ))}
