@@ -1,5 +1,4 @@
 import PluginNotes from "./PluginNotes"
-import { versionLabel } from "./versionLabel"
 import { formatBytes } from "./upload"
 
 // ── What is in this file ──
@@ -83,7 +82,7 @@ const css = `
 `
 
 export function ProjectView({
-  project, commits, activeCommitId,
+  project, commits, versionLabels, activeCommitId,
   committing, message, file, uploading, uploadProgress, uploadError, downloadingId,
   timeAgo,
   onEdit, onStartCommit, onCancelCommit, onMessageChange, onFileChange, onSave,
@@ -118,7 +117,7 @@ export function ProjectView({
             </button>
             <button className="sy-btn sy-btn-ghost" type="button" onClick={onCancelCommit} disabled={uploading}>Cancel</button>
           </div>
-          <p id="pv-note-help" className="pv-help">The version number is assigned automatically when you save.</p>
+          <p id="pv-note-help" className="pv-help">Your new version will follow the versions currently saved.</p>
           <label className="pv-file">
             Attach your project file or a zipped folder (optional)
             <input type="file" disabled={uploading} onChange={e => onFileChange(e.target.files[0] || null)} />
@@ -135,19 +134,20 @@ export function ProjectView({
       )}
 
       <p className="pv-count">{commits.length} saved version{commits.length !== 1 ? "s" : ""}</p>
-      {commits.length > 0 && <p className="pv-numbering">Version numbers stay fixed. Deleted numbers aren't reused.</p>}
+      {commits.length > 0 && <p className="pv-numbering">Numbered oldest to newest. Deleting a version updates the displayed numbers.</p>}
 
       {commits.length === 0 ? (
         <div className="pv-empty">No versions yet. Press "Save a version" to add your first.</div>
       ) : (
         commits.map((commit, index) => {
           const open = activeCommitId === commit.id
+          const label = versionLabels.get(commit.id) || "Saved version"
           return (
             <div key={commit.id} className="pv-commit" style={{ "--i": Math.min(index, 8) }}>
               <div className="pv-commit-head">
                 {/* The text area is a real button, so keyboard and screen reader users can open it too */}
                 <button className="pv-commit-main" aria-expanded={open} onClick={() => onToggleCommit(commit)}>
-                  <b>{versionLabel(commit)}</b>
+                  <b>{label}</b>
                   {commit.message && <span className="pv-note">Note: {commit.message}</span>}
                   <span>{timeAgo(commit.created_at)}</span>
                   {commit.file_name && <em>{commit.file_name} · {formatBytes(commit.file_size)}</em>}
@@ -159,7 +159,7 @@ export function ProjectView({
                     </button>
                   )}
                   <button className="pv-link" onClick={() => onToggleCommit(commit)}>{open ? "Hide plugins" : "Plugins"}</button>
-                  <button className="pv-del" aria-label={`Delete ${versionLabel(commit)}${commit.message ? `, note: ${commit.message}` : ""}`} onClick={() => onDeleteCommit(commit.id)}>×</button>
+                  <button className="pv-del" aria-label={`Delete ${label}${commit.message ? `, note: ${commit.message}` : ""}`} onClick={() => onDeleteCommit(commit.id)}>×</button>
                 </div>
               </div>
 
@@ -169,7 +169,7 @@ export function ProjectView({
                   <PluginNotes
                     key={commit.id}
                     commitId={commit.id}
-                    title={versionLabel(commit)}
+                    title={label}
                     fileName={commit.file_name}
                     hasFile={Boolean(commit.file_url)}
                     onDownload={() => onDownload(commit)}

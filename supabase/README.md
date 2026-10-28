@@ -20,9 +20,9 @@ project ownership, and updates must prevent moving commits to another project.
 The ownership migration in `migrations/202610280001_protect_commit_projects.sql`
 has already been approved and applied by the owner to the current production
 database. Do not rerun it there. Review any future migrations against the actual
-schema before applying. Do not wipe existing records. The frontend now
-uses `version_number` if present and otherwise says “Saved version”; it does not
-invent historical numbers. This frontend change does not implement the counter.
+schema before applying. Do not wipe existing records. The frontend displays consecutive positions within the versions currently saved
+in each project. Deletions update these display labels; stored version_number
+counters and record IDs remain unchanged. Display labels are not permanent IDs.
 
 Still required: authenticated tests with two disposable accounts and projects,
 including cross-account inserts/updates and delete/new-version numbering checks.

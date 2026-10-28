@@ -1,8 +1,13 @@
 import { useEffect, useRef } from 'react'
 
 const css = `
-.sy-dialog { width: min(460px, calc(100% - 32px)); padding: 28px; border: 1px solid var(--border); border-radius: 20px; box-shadow: 0 24px 80px #073f3933; }
+.sy-dialog { position: fixed; inset: 0; margin: auto; box-sizing: border-box; width: min(460px, calc(100% - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; padding: 28px; border: 1px solid var(--border); border-radius: 20px; box-shadow: 0 24px 80px #073f3933; }
 .sy-dialog::backdrop { background: #073f3977; backdrop-filter: blur(4px); }
+.sy-dialog[open] { animation: sy-dialog-reveal 220ms cubic-bezier(.2, .8, .2, 1) both; }
+.sy-dialog[open]::backdrop { animation: sy-dialog-backdrop 220ms ease-out both; }
+@keyframes sy-dialog-reveal { from { opacity: 0; transform: translateY(10px) scale(.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes sy-dialog-backdrop { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .sy-dialog[open], .sy-dialog[open]::backdrop { animation: none; } }
 .sy-dialog h2 { font-size: 23px; margin: 12px 0; }
 .sy-dialog p { color: var(--soft); overflow-wrap: anywhere; }
 .sy-dialog-icon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; background: var(--teal-soft); color: var(--teal-dark); font-size: 22px; font-weight: 700; }
