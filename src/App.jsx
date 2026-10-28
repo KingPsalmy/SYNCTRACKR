@@ -9,6 +9,7 @@ import { Logo } from "./ui"
 import { baseCss } from "./theme"
 import { buildVersionLabels } from "./versionLabel"
 import { uploadFile, getDownloadUrl, deleteOnServer, formatBytes } from "./upload"
+import { createSaveAttempt, findSavedAttempt, saveVersion } from "./saveVersion"
 
 // ── Constants ───────────────────────────────────────
 const FREE_QUOTA_BYTES = 5 * 1024 ** 3 // keep in sync with upload-url.js
@@ -64,6 +65,9 @@ function App() {
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(null)
   const saveInFlight = useRef(false)
+  const pendingSaves = useRef(new Map())
+  const currentUserId = useRef(null)
+  const [retryPending, setRetryPending] = useState(false)
   const [dialog, setDialog] = useState(null)
   const dialogResult = useRef(null)
 
@@ -80,6 +84,15 @@ function App() {
     setDialog(null)
   }
   useEffect(() => () => dialogResult.current?.(false), [])
+  useEffect(() => {
+    function warnBeforeLeaving(event) {
+      if (pendingSaves.current.size === 0) return
+      event.preventDefault()
+      event.returnValue = ""
+    }
+    window.addEventListener("beforeunload", warnBeforeLeaving)
+    return () => window.removeEventListener("beforeunload", warnBeforeLeaving)
+  }, [])
   const [uploadError, setUploadError] = useState("")
   const [downloadingId, setDownloadingId] = useState(null) // which commit is preparing a download
 
@@ -102,8 +115,15 @@ function App() {
     function handleSession(newSession) {
       setSession(newSession)
       const newId = newSession?.user?.id ?? null
+      currentUserId.current = newId
       if (newId === loadedUserId) return
       loadedUserId = newId
+      pendingSaves.current.clear()
+      setRetryPending(false)
+      setCommitting(false)
+      setFile(null)
+      setMessage("")
+      setUploadError("")
       if (newSession) fetchAll()
       else resetData()
     }
@@ -245,36 +265,95 @@ function App() {
     setAddingProject(false)
     setEditingProject(false)
     setCommitting(false)
+    restoreDraft(id)
+  }
+
+  // ── COMMITS: create + delete + download ──────────
+  function restoreDraft(projectId) {
+    const attempt = pendingSaves.current.get(projectId)
+    setRetryPending(Boolean(attempt))
+    setMessage(attempt?.message || "")
+    setFile(attempt?.file || null)
+    setUploadError("")
+  }
+
+  function saveServices(attempt) {
+    return {
+      assertAccount() {
+        if (currentUserId.current !== attempt.userId) throw new Error("Your account changed. Sign in again before saving.")
+      },
+      async findCommit(id) {
+        const { data, error } = await supabase.from("commits").select("*")
+          .eq("id", id).eq("user_id", attempt.userId).maybeSingle()
+        if (error) throw error
+        return data
+      },
+      async insertCommit(payload) {
+        const { data, error } = await supabase.from("commits").insert(payload).select().single()
+        if (error) throw error
+        return data
+      },
+      upload: (draft, progress) => uploadFile(draft.file, draft.projectId, progress, draft.uploadState, draft.userId),
+      onProgress: setUploadProgress,
+    }
+  }
+
+  function finishSave(attempt, data) {
+    if (currentUserId.current !== attempt.userId) return
+    pendingSaves.current.delete(attempt.projectId)
+    setAllCommits(current => [data, ...current.filter(commit => commit.id !== data.id)]
+      .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || "")))
+    setRetryPending(false)
+    setCommitting(false)
     setMessage("")
     setFile(null)
     setUploadError("")
   }
 
-  // ── COMMITS: create + delete + download ──────────
+  async function discardDraft() {
+    if (saveInFlight.current) return
+    const attempt = pendingSaves.current.get(selected.id)
+    if (!attempt) return
+    if (!await showDialog({ title: "Discard this draft?", message: "We'll first check whether it was already saved. Saved versions will be kept.", confirmLabel: "Discard draft" })) return
+    saveInFlight.current = true
+    setUploading(true)
+    setUploadProgress(null)
+    try {
+      const existing = await findSavedAttempt(attempt, saveServices(attempt))
+      if (existing) {
+        finishSave(attempt, existing)
+        showDialog({ title: "Your version was already saved", message: "It is now shown in your version history." })
+      } else {
+        pendingSaves.current.delete(attempt.projectId)
+        restoreDraft(attempt.projectId)
+        setCommitting(false)
+      }
+    } catch {
+      setUploadError("Could not check whether this version was saved. Keep this tab open and retry before discarding the draft.")
+    } finally {
+      saveInFlight.current = false
+      setUploading(false)
+    }
+  }
+
   async function handleSaveCommit() {
     if (!message.trim() || saveInFlight.current) return
+    const attempt = pendingSaves.current.get(selected.id) || createSaveAttempt({
+      userId: session.user.id, projectId: selected.id, message, file,
+    })
+    pendingSaves.current.set(selected.id, attempt)
+    setRetryPending(true)
     saveInFlight.current = true
     setUploading(true)
     setUploadProgress(file ? 0 : null)
     setUploadError("")
     try {
-      const uploaded = file ? await uploadFile(file, selected.id, setUploadProgress) : null
-      setUploadProgress(null)
-      const { data, error } = await supabase.from("commits").insert({
-        project_id: selected.id,
-        message: message.trim(),
-        user_id: session.user.id,
-        file_url: uploaded?.key || null,
-        file_name: uploaded?.name || null,
-        file_size: uploaded?.size ?? null,
-      }).select().single()
-      if (error) throw error
-      setAllCommits(current => [data, ...current])
-      setCommitting(false)
-      setMessage("")
-      setFile(null)
+      const data = await saveVersion(attempt, saveServices(attempt))
+      finishSave(attempt, data)
     } catch (error) {
-      setUploadError(error.message || "Could not save this version. Please try again.")
+      if (currentUserId.current === attempt.userId) {
+        setUploadError(`${error.message || "Could not confirm this save."} Use Retry save to check and finish this draft.`)
+      }
     } finally {
       saveInFlight.current = false
       setUploading(false)
@@ -368,6 +447,8 @@ function App() {
     if (error) { showDialog({ title: "Could not create project", message: error.message }); return }
     setProjects([data[0], ...projects])
     setSelected(data[0])
+    restoreDraft(data[0].id)
+    setCommitting(false)
     setAddingProject(false)
     setView("project")
   }
@@ -404,10 +485,12 @@ function App() {
       return
     }
     const remaining = projects.filter(p => p.id !== id)
+    pendingSaves.current.delete(id)
     setProjects(remaining)
     setAllCommits(allCommits.filter(cm => cm.project_id !== id))
     if (selected?.id === id) {
       setSelected(remaining[0] || null)
+      restoreDraft(remaining[0]?.id)
       setView("overview")
     }
   }
@@ -457,11 +540,13 @@ function App() {
         uploading={uploading}
         uploadProgress={uploadProgress}
         uploadError={uploadError}
+        retryPending={retryPending}
         downloadingId={downloadingId}
         timeAgo={timeAgo}
         onEdit={openEditProjectForm}
-        onStartCommit={() => setCommitting(true)}
-        onCancelCommit={() => { setCommitting(false); setMessage(""); setFile(null); setUploadError("") }}
+        onStartCommit={() => { restoreDraft(selected.id); setCommitting(true) }}
+        onCancelCommit={() => { setCommitting(false); restoreDraft(selected.id) }}
+        onDiscardDraft={discardDraft}
         onMessageChange={setMessage}
         onFileChange={setFile}
         onSave={handleSaveCommit}

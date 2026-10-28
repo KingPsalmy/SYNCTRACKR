@@ -38,9 +38,26 @@ Verification errors keep the save form open and do not create a version.
 This checks presence and size, not a content checksum or DAW compatibility.
 It is a reliability check for the app's save flow, not a database-enforced
 upload guarantee: direct Supabase inserts remain subject to the existing RLS.
-A verification or database failure after a successful PUT can leave an
-unreferenced object in R2. Pending-upload tracking, safe orphan cleanup,
-idempotent saves, and atomic quota reservations are still outstanding.
+A verification or database failure after a successful PUT keeps a draft in
+memory for this tab. **Retry save** reuses the completed upload, verifies it
+again when needed, and uses the same commit UUID. If an insert's response was
+lost, the app looks up that UUID before trying another insert. It never upserts
+over an existing version. Closing the form or switching projects preserves the
+pending draft; **Resume save** opens it again. Notes and the file are locked for
+that attempt. Discard checks for an already-saved version before dropping the
+draft. The browser is asked to warn before a refresh or tab close while drafts
+remain; browsers may suppress that warning.
+
+This recovery is limited to the current tab. Refreshing, closing the tab, signing
+out, switching accounts, or discarding a draft drops the recovery state. A PUT
+whose success response was lost is not cached and may be uploaded again. Partial
+transfers do not resume. Failed/abandoned saves can still leave unreferenced R2
+objects; discarding a draft does not delete its file or cancel a server insert
+already in flight. Durable pending-upload tracking, safe orphan cleanup, and
+atomic quota reservations remain outstanding. No database migration is needed
+for the current-tab retry flow; it uses the existing commits primary key.
+
+See [ROADMAP.md](ROADMAP.md) for the current product stage and release gates.
 
 ## Checks
 
