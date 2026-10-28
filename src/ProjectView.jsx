@@ -84,7 +84,7 @@ const css = `
 
 export function ProjectView({
   project, commits, activeCommitId,
-  committing, message, file, uploading, uploadError, downloadingId,
+  committing, message, file, uploading, uploadProgress, uploadError, downloadingId,
   timeAgo,
   onEdit, onStartCommit, onCancelCommit, onMessageChange, onFileChange, onSave,
   onToggleCommit, onDownload, onDeleteCommit,
@@ -111,19 +111,25 @@ export function ProjectView({
       ) : (
         <form className="pv-commitform" onSubmit={e => { e.preventDefault(); onSave() }}>
           <div className="pv-row">
-            <input className="sy-input" value={message} onChange={e => onMessageChange(e.target.value)}
+            <input className="sy-input" value={message} disabled={uploading} onChange={e => onMessageChange(e.target.value)}
               placeholder="Version note, e.g. Balanced the vocals" aria-label="Version note" aria-describedby="pv-note-help" autoFocus />
             <button className="sy-btn sy-btn-primary" type="submit" disabled={uploading || !message.trim()}>
-              {uploading ? "Uploading..." : "Save"}
+              {uploading ? (uploadProgress === null ? "Saving..." : "Uploading...") : "Save"}
             </button>
             <button className="sy-btn sy-btn-ghost" type="button" onClick={onCancelCommit} disabled={uploading}>Cancel</button>
           </div>
           <p id="pv-note-help" className="pv-help">The version number is assigned automatically when you save.</p>
           <label className="pv-file">
             Attach your project file or a zipped folder (optional)
-            <input type="file" onChange={e => onFileChange(e.target.files[0] || null)} />
+            <input type="file" disabled={uploading} onChange={e => onFileChange(e.target.files[0] || null)} />
           </label>
           {file && <p className="pv-fileinfo">{file.name} · {formatBytes(file.size)}</p>}
+          {uploading && <div className="pv-help" role="status" aria-live="polite">
+            {uploadProgress === null ? "Saving your version..." : <>
+              <label htmlFor="upload-progress">{uploadProgress === 100 ? "Upload sent. Waiting for storage confirmation..." : `Uploading to cloud storage: ${uploadProgress}%`}</label>
+              <progress id="upload-progress" max="100" value={uploadProgress} style={{ width: "100%", accentColor: "var(--teal)" }} />
+            </>}
+          </div>}
           {uploadError && <p className="pv-error" role="alert">{uploadError}</p>}
         </form>
       )}

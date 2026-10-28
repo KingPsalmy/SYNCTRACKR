@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
+import Dialog from "./Dialog"
 import { supabase } from "./supabase"
 import Landing from "./Landing"
 import Login from "./Login"
@@ -61,6 +62,24 @@ function App() {
   const [message, setMessage] = useState("")
   const [file, setFile] = useState(null)
   const [uploading, setUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(null)
+  const saveInFlight = useRef(false)
+  const [dialog, setDialog] = useState(null)
+  const dialogResult = useRef(null)
+
+  function showDialog(request) {
+    dialogResult.current?.(false)
+    return new Promise(resolve => {
+      dialogResult.current = resolve
+      setDialog(request)
+    })
+  }
+  function closeDialog(accepted) {
+    dialogResult.current?.(accepted)
+    dialogResult.current = null
+    setDialog(null)
+  }
+  useEffect(() => () => dialogResult.current?.(false), [])
   const [uploadError, setUploadError] = useState("")
   const [downloadingId, setDownloadingId] = useState(null) // which commit is preparing a download
 
@@ -208,12 +227,14 @@ function App() {
 
   // ── NAVIGATION ────────────────────────────────────
   function goOverview() {
+    if (saveInFlight.current) return
     setView("overview")
     setAddingProject(false)
     setEditingProject(false)
   }
 
   function openProject(id) {
+    if (saveInFlight.current) return
     const project = projects.find(p => p.id === id)
     if (!project) return
     setSelected(project)
@@ -230,56 +251,50 @@ function App() {
 
   // ── COMMITS: create + delete + download ──────────
   async function handleSaveCommit() {
-    if (!message.trim() || uploading) return
+    if (!message.trim() || saveInFlight.current) return
+    saveInFlight.current = true
+    setUploading(true)
+    setUploadProgress(file ? 0 : null)
     setUploadError("")
-
-    // Step 1: if a file was chosen, upload it first.
-    let uploaded = null
-    if (file) {
-      setUploading(true)
-      try {
-        uploaded = await uploadFile(file, selected.id)
-      } catch (err) {
-        console.error(err)
-        setUploadError(err.message)
-        return
-      } finally {
-        setUploading(false)
-      }
-    }
-
-    // Step 2: only after the upload succeeds, save the commit row.
-    const { data, error } = await supabase
-      .from("commits")
-      .insert({
+    try {
+      const uploaded = file ? await uploadFile(file, selected.id, setUploadProgress) : null
+      setUploadProgress(null)
+      const { data, error } = await supabase.from("commits").insert({
         project_id: selected.id,
-        message,
+        message: message.trim(),
         user_id: session.user.id,
-        file_url: uploaded ? uploaded.key : null,
-        file_name: uploaded ? uploaded.name : null,
-        file_size: uploaded ? uploaded.size : null,
-      })
-      .select()
-    if (error) { console.error(error); return }
-    setAllCommits([data[0], ...allCommits])
-    setCommitting(false)
-    setMessage("")
-    setFile(null)
+        file_url: uploaded?.key || null,
+        file_name: uploaded?.name || null,
+        file_size: uploaded?.size ?? null,
+      }).select().single()
+      if (error) throw error
+      setAllCommits(current => [data, ...current])
+      setCommitting(false)
+      setMessage("")
+      setFile(null)
+    } catch (error) {
+      setUploadError(error.message || "Could not save this version. Please try again.")
+    } finally {
+      saveInFlight.current = false
+      setUploading(false)
+      setUploadProgress(null)
+    }
   }
 
   // Delete goes through our server function, which removes the file
   // from R2 first and the database row second. The screen only
   // changes after the server confirms.
   async function handleDeleteCommit(commitId) {
-    if (!confirm("Delete this version and its attached file? This can't be undone.")) return
+    if (saveInFlight.current) return
+    if (!await showDialog({ title: "Delete this version?", message: "This permanently removes the saved version and its attached file. This cannot be undone.", confirmLabel: "Delete version" })) return
     try {
       await deleteOnServer({ commitId })
     } catch (err) {
       console.error(err)
-      alert(err.message)
+      showDialog({ title: "Could not delete version", message: err.message })
       return
     }
-    setAllCommits(allCommits.filter(cm => cm.id !== commitId))
+    setAllCommits(current => current.filter(cm => cm.id !== commitId))
     if (activeCommit?.id === commitId) {
       setActiveCommit(null)
     }
@@ -303,7 +318,7 @@ function App() {
       window.location.assign(url)
     } catch (err) {
       console.error(err)
-      alert(err.message)
+      showDialog({ title: "Could not download file", message: err.message })
     } finally {
       setDownloadingId(null)
     }
@@ -311,12 +326,14 @@ function App() {
 
   // ── PROJECTS: create, edit, delete ───────────────
   function openNewProjectForm() {
+    if (saveInFlight.current) return
     setProjectForm(emptyProjectForm)
     setEditingProject(false)
     setAddingProject(true)
   }
 
   function openEditProjectForm() {
+    if (saveInFlight.current) return
     setProjectForm({
       name: selected.name,
       bpm: selected.bpm || "",
@@ -347,7 +364,7 @@ function App() {
         user_id: session.user.id,
       })
       .select()
-    if (error) { console.error(error); return }
+    if (error) { showDialog({ title: "Could not create project", message: error.message }); return }
     setProjects([data[0], ...projects])
     setSelected(data[0])
     setAddingProject(false)
@@ -367,7 +384,7 @@ function App() {
       })
       .eq("id", selected.id)
       .select()
-    if (error) { console.error(error); return }
+    if (error) { showDialog({ title: "Could not update project", message: error.message }); return }
     const updated = data[0]
     setProjects(projects.map(p => (p.id === updated.id ? updated : p)))
     setSelected(updated)
@@ -376,12 +393,13 @@ function App() {
   }
 
   async function handleDeleteProject(id) {
-    if (!confirm("Delete this project, all its versions and their files? This can't be undone.")) return
+    if (saveInFlight.current) return
+    if (!await showDialog({ title: "Delete this project?", message: "This permanently removes the project, every saved version, and all attached files. This cannot be undone.", confirmLabel: "Delete project" })) return
     try {
       await deleteOnServer({ projectId: id })
     } catch (err) {
       console.error(err)
-      alert(err.message)
+      showDialog({ title: "Could not delete project", message: err.message })
       return
     }
     const remaining = projects.filter(p => p.id !== id)
@@ -435,6 +453,7 @@ function App() {
         message={message}
         file={file}
         uploading={uploading}
+        uploadProgress={uploadProgress}
         uploadError={uploadError}
         downloadingId={downloadingId}
         timeAgo={timeAgo}
@@ -452,6 +471,8 @@ function App() {
   }
 
   return (
+    <>
+    <Dialog request={dialog} onClose={closeDialog} />
     <Dashboard
       userName={firstName}
       loading={loading}
@@ -482,10 +503,11 @@ function App() {
       onOpenProject={openProject}
       onDeleteProject={handleDeleteProject}
       onGoOverview={goOverview}
-      onSignOut={() => supabase.auth.signOut()}
+      onSignOut={() => { if (!saveInFlight.current) supabase.auth.signOut() }}
     >
       {content}
     </Dashboard>
+    </>
   )
 }
 
