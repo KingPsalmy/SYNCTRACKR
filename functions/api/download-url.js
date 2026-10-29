@@ -1,15 +1,24 @@
 import { AwsClient } from "aws4fetch"
+import { isOwnedObjectKey, objectPath } from "../../server/objectKey.js"
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   })
 }
 
 export async function onRequestPost({ request, env }) {
+  try {
+    return await download({ request, env })
+  } catch {
+    return json({ error: "Could not prepare your download. Please try again." }, 502)
+  }
+}
+
+async function download({ request, env }) {
   // 1. Who is asking? (same check as the upload function)
   const token = (request.headers.get("Authorization") || "").replace("Bearer ", "")
   if (!token) return json({ error: "Not logged in" }, 401)
@@ -27,7 +36,7 @@ export async function onRequestPost({ request, env }) {
   } catch {
     return json({ error: "Bad request" }, 400)
   }
-  const { commitId } = body
+  const { commitId } = body || {}
   if (!UUID.test(commitId || "")) return json({ error: "Invalid commit" }, 400)
 
   // 3. Look the commit up AS THE USER, so row level security applies.
@@ -37,11 +46,12 @@ export async function onRequestPost({ request, env }) {
   )
   if (!commitRes.ok) return json({ error: "Lookup failed" }, 502)
   const rows = await commitRes.json()
+  if (!Array.isArray(rows)) return json({ error: "Lookup failed" }, 502)
   const commit = rows[0]
   if (!commit || !commit.file_url) return json({ error: "No file for this commit" }, 404)
 
   // 4. Second lock: the file must live inside the caller's own folder.
-  if (!commit.file_url.startsWith(`${user.id}/`)) return json({ error: "Forbidden" }, 403)
+  if (!isOwnedObjectKey(commit.file_url, user.id)) return json({ error: "Forbidden" }, 403)
 
   // 5. Create a presigned download link, valid for 5 minutes.
   const safeName = (commit.file_name || "download").replace(/[^a-zA-Z0-9._ -]/g, "_")
@@ -51,7 +61,7 @@ export async function onRequestPost({ request, env }) {
     service: "s3",
     region: "auto",
   })
-  const url = new URL(`${env.R2_ENDPOINT}/${env.R2_BUCKET}/${commit.file_url}`)
+  const url = new URL(`${env.R2_ENDPOINT}/${env.R2_BUCKET}/${objectPath(commit.file_url)}`)
   url.searchParams.set("X-Amz-Expires", "300")
   url.searchParams.set("response-content-disposition", `attachment; filename="${safeName}"`)
   const signed = await r2.sign(new Request(url, { method: "GET" }), {

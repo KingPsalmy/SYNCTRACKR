@@ -1,4 +1,5 @@
 import { AwsClient } from "aws4fetch"
+import { isOwnedObjectKey, objectPath } from "../../server/objectKey.js"
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MAX_FILES_PER_CALL = 40
@@ -6,11 +7,19 @@ const MAX_FILES_PER_CALL = 40
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   })
 }
 
 export async function onRequestPost({ request, env }) {
+  try {
+    return await deleteTarget({ request, env })
+  } catch {
+    return json({ error: "Could not complete deletion. Please try again." }, 502)
+  }
+}
+
+async function deleteTarget({ request, env }) {
   // 1. Who is asking?
   const token = (request.headers.get("Authorization") || "").replace("Bearer ", "")
   if (!token) return json({ error: "Not logged in" }, 401)
@@ -53,13 +62,14 @@ export async function onRequestPost({ request, env }) {
   const listRes = await db(`commits?${filter}&select=file_url`)
   if (!listRes.ok) return json({ error: "Lookup failed" }, 502)
   const rows = await listRes.json()
+  if (!Array.isArray(rows)) return json({ error: "Lookup failed" }, 502)
   const keys = rows.map(r => r.file_url).filter(Boolean)
 
   if (keys.length > MAX_FILES_PER_CALL) {
     return json({ error: `Too many files to delete at once (max ${MAX_FILES_PER_CALL})` }, 400)
   }
   // Second lock: every file must live inside the caller's own folder.
-  if (keys.some(k => !k.startsWith(`${user.id}/`))) return json({ error: "Forbidden" }, 403)
+  if (keys.some(key => !isOwnedObjectKey(key, user.id))) return json({ error: "Forbidden" }, 403)
 
   // 4. Delete the files from R2 FIRST.
   if (keys.length > 0) {
@@ -71,7 +81,7 @@ export async function onRequestPost({ request, env }) {
     })
     const results = await Promise.all(
       keys.map(async key => {
-        const path = key.split("/").map(encodeURIComponent).join("/")
+        const path = objectPath(key)
         try {
           const res = await r2.fetch(`${env.R2_ENDPOINT}/${env.R2_BUCKET}/${path}`, { method: "DELETE" })
           if (!res.ok) {
