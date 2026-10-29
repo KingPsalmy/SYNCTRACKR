@@ -1,6 +1,6 @@
 # SyncTrackr delivery plan
 
-Updated 28 October 2026. Status is based on the repository and the owner's
+Updated 29 October 2026. Status is based on the repository and the owner's
 reported live checks, not on the appearance of the UI. The original v1.6 vision
 is a DAW-aware backup, versioning, and assisted restore system. The current
 product is a **manual cloud-backup web alpha**. It is not yet the original MVP.
@@ -35,6 +35,8 @@ It would not be advertised as automatic project protection.
       delete, and confirm both metadata and file lifecycle.
 - [ ] Verify two-account isolation through normal authenticated sessions,
       including direct Supabase requests. Capture a complete baseline schema.
+      An opt-in runner is available in `tests/acceptance/README.md`; it still
+      needs two disposable accounts and a reviewed live run report.
 - [ ] Exercise representative large music projects, slow/offline connections,
       expiration of login/upload links, and mobile/desktop browsers.
 - [ ] Finish server-side quota/record integrity and orphan handling; add support

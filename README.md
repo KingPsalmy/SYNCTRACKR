@@ -70,6 +70,11 @@ npm run build:functions
 
 The automated endpoint tests mock upstream services. Real Supabase permissions, R2 uploads/downloads, and two-account isolation still require integration verification. See `supabase/README.md` for the read-only database inspection workflow.
 
+The opt-in [live acceptance runner](tests/acceptance/README.md) checks a generated
+file roundtrip and two-account isolation using disposable accounts. Start with
+`npm run test:acceptance` for a local-only configuration check. It does not run
+live tests unless explicitly given `--run`.
+
 GitHub Actions runs these checks on Windows and Linux for pull requests to `main`,
 pushes to `main` and `codex/**` branches, and manual workflow runs. It installs the
 locked dependencies with Node.js 24 and builds both the frontend and Cloudflare

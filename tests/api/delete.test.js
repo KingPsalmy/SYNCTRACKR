@@ -74,3 +74,14 @@ test('network errors preserve the row and do not log error messages', async t =>
   assert.deepEqual(calls, ['storage'])
   assert.deepEqual(logs.mock.calls[0].arguments, ['R2 delete failed', { code: 'RequestFailed', type: 'TypeError' }])
 })
+
+test('path traversal never reaches R2 or deletes a database row', async t => {
+  for (const key of [`${userId}/../foreign/file.flp`, `${userId}/%2e%2e/foreign/file.flp`,
+    `${userId}/project/../../foreign/file.flp`, `${userId}/a\\..\\file.flp`, `${userId}//file.flp`,
+    `${userId}/file.flp?other`, { path: 'wrong type' }]) {
+    const calls = mockServices(t, key, () => { assert.fail('Must not access storage') })
+    assert.equal((await onRequestPost({ request: request(), env })).status, 403)
+    assert.deepEqual(calls, [])
+    t.mock.restoreAll()
+  }
+})
