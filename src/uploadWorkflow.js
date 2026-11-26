@@ -1,17 +1,27 @@
 import { putFile } from "./uploadTransport.js"
 
-export async function uploadToR2(file, projectId, token, onProgress, { request = fetch, transfer = putFile } = {}) {
+export async function uploadToR2(file, projectId, token, onProgress, { request = fetch, transfer = putFile, uploadState = {} } = {}) {
   const headers = { "Content-Type": "application/json", Authorization: `Bearer ${token}` }
-  const res = await request("/api/upload-url", {
-    method: "POST", headers,
-    body: JSON.stringify({ projectId, fileName: file.name, fileSize: file.size }),
-  })
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.error || `Upload request failed (${res.status})`)
+  if (uploadState.key && (uploadState.file !== file || uploadState.projectId !== projectId)) {
+    throw new Error("This upload belongs to a different draft.")
   }
-  const { uploadUrl, key } = await res.json()
-  await transfer(uploadUrl, file, onProgress)
+  let key = uploadState.key
+  if (!key) {
+    const res = await request("/api/upload-url", {
+      method: "POST", headers,
+      body: JSON.stringify({ projectId, fileName: file.name, fileSize: file.size }),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error(body.error || `Upload request failed (${res.status})`)
+    }
+    const signed = await res.json()
+    key = signed.key
+    await transfer(signed.uploadUrl, file, onProgress)
+    // Retain only a confirmed PUT, scoped to this exact File and project. A
+    // failed verification or database insert can retry without sending bytes.
+    Object.assign(uploadState, { key, file, projectId })
+  }
   onProgress?.(100)
 
   // Keep the save pending until the server independently reads R2's object size.

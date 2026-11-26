@@ -10,7 +10,8 @@
     "build": "vite build",
     "build:functions": "wrangler pages functions build functions --outdir .wrangler/build --compatibility-date 2026-10-23",
     "lint": "eslint .",
-    "test": "node --test src/*.test.js tests/api/*.test.js",
+    "test": "node --test src/*.test.js tests/api/*.test.js tests/acceptance/*.test.js",
+    "test:acceptance": "node scripts/live-acceptance.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

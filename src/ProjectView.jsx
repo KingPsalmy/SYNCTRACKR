@@ -83,10 +83,10 @@ const css = `
 
 export function ProjectView({
   project, commits, versionLabels, activeCommitId,
-  committing, message, file, uploading, uploadProgress, uploadError, downloadingId,
+  committing, message, file, uploading, uploadProgress, uploadError, downloadingId, retryPending,
   timeAgo,
   onEdit, onStartCommit, onCancelCommit, onMessageChange, onFileChange, onSave,
-  onToggleCommit, onDownload, onDeleteCommit,
+  onToggleCommit, onDownload, onDeleteCommit, onDiscardDraft,
 }) {
   const details = `${project.daw || ""} ${project.daw_version || ""}`.trim()
 
@@ -106,22 +106,23 @@ export function ProjectView({
 
       {/* Save-a-version button, or the form once it is open */}
       {!committing ? (
-        <button className="sy-btn sy-btn-primary pv-new" onClick={onStartCommit}>+ Save a version</button>
+        <button className="sy-btn sy-btn-primary pv-new" onClick={onStartCommit}>{retryPending ? "Resume save" : "+ Save a version"}</button>
       ) : (
         <form className="pv-commitform" onSubmit={e => { e.preventDefault(); onSave() }}>
           <div className="pv-row">
-            <input className="sy-input" value={message} disabled={uploading} onChange={e => onMessageChange(e.target.value)}
+            <input className="sy-input" value={message} disabled={uploading || retryPending} onChange={e => onMessageChange(e.target.value)}
               placeholder="Version note, e.g. Balanced the vocals" aria-label="Version note" aria-describedby="pv-note-help" autoFocus />
             <button className="sy-btn sy-btn-primary" type="submit" disabled={uploading || !message.trim()}>
-              {uploading ? (uploadProgress === null ? "Saving..." : "Uploading...") : "Save"}
+              {uploading ? (uploadProgress === null ? "Saving..." : "Uploading...") : retryPending ? "Retry save" : "Save"}
             </button>
-            <button className="sy-btn sy-btn-ghost" type="button" onClick={onCancelCommit} disabled={uploading}>Cancel</button>
+            <button className="sy-btn sy-btn-ghost" type="button" onClick={onCancelCommit} disabled={uploading}>{retryPending ? "Close" : "Cancel"}</button>
           </div>
           <p id="pv-note-help" className="pv-help">Your new version will follow the versions currently saved.</p>
-          <label className="pv-file">
+          {!retryPending && <label className="pv-file">
             Attach your project file or a zipped folder (optional)
             <input type="file" disabled={uploading} onChange={e => onFileChange(e.target.files[0] || null)} />
-          </label>
+          </label>}
+          {retryPending && !file && <p className="pv-fileinfo">No file attached to this draft.</p>}
           {file && <p className="pv-fileinfo">{file.name} · {formatBytes(file.size)}</p>}
           {uploading && <div className="pv-help" role="status" aria-live="polite">
             {uploadProgress === null ? "Saving your version..." : <>
@@ -130,6 +131,10 @@ export function ProjectView({
             </>}
           </div>}
           {uploadError && <p className="pv-error" role="alert">{uploadError}</p>}
+          {retryPending && !uploading && <div className="pv-help">
+            <p>This draft is kept in this tab. Retry save reuses any completed upload. Close lets you return later; refreshing or signing out clears the draft.</p>
+            <button className="sy-btn sy-btn-ghost sy-btn-sm" type="button" onClick={onDiscardDraft}>Discard draft</button>
+          </div>}
         </form>
       )}
 
